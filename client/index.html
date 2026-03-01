@@ -277,6 +277,15 @@
   </div>
 </div>
 
+<div id="webview-overlay" hidden>
+  <div class="webview-header">
+    <span class="webview-title" id="webview-title"></span>
+    <button id="webview-external" type="button" title="Open in browser">EXTERNAL</button>
+    <button id="webview-close" type="button" title="Close">&times;</button>
+  </div>
+  <iframe id="webview-frame" sandbox="allow-scripts allow-same-origin allow-popups"></iframe>
+</div>
+
 <div id="loading">COSMANIA DEX</div>
 
 <script src="game.js"></script>

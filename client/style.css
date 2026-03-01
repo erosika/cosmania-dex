@@ -6,6 +6,12 @@
   font-display: swap;
 }
 
+@font-face {
+  font-family: "Noto Emoji";
+  src: local("Noto Color Emoji"), local("Noto Emoji"), local("NotoColorEmoji");
+  font-display: swap;
+}
+
 :root {
   --bg: #0a0a0f;
   --bg-surface: #12121a;
@@ -54,8 +60,9 @@
     0 6px 14px rgba(0, 0, 0, 0.22),
     inset 0 1px 0 rgba(255, 255, 255, 0.08);
 
-  --font-mono: 'Departure Mono', ui-monospace, 'SF Mono', monospace;
-  --font-serif: 'Departure Mono', ui-monospace, 'SF Mono', monospace;
+  --font-emoji: 'Noto Emoji', 'Noto Color Emoji', 'Apple Color Emoji', 'Segoe UI Emoji', 'Twemoji Mozilla', sans-serif;
+  --font-mono: 'Departure Mono', ui-monospace, 'SF Mono', var(--font-emoji), monospace;
+  --font-serif: 'Departure Mono', ui-monospace, 'SF Mono', var(--font-emoji), monospace;
 }
 
 :root[data-theme="light"],
@@ -1601,6 +1608,147 @@ button.agent-profile-window-dot.close:hover {
   max-width: 85%;
 }
 
+.chat-markdown {
+  font-family: var(--font-mono);
+  white-space: normal;
+  word-break: break-word;
+}
+
+.chat-markdown > :first-child {
+  margin-top: 0;
+}
+
+.chat-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.chat-markdown p {
+  margin: 0 0 0.48em;
+}
+
+.chat-markdown ul,
+.chat-markdown ol {
+  margin: 0.34em 0 0.5em 1.2em;
+  padding: 0;
+}
+
+.chat-markdown li {
+  margin: 0.14em 0;
+}
+
+.chat-markdown blockquote {
+  margin: 0.4em 0;
+  padding: 0.14em 0 0.14em 0.68em;
+  border-left: 2px solid color-mix(in srgb, var(--accent) 72%, transparent);
+  color: color-mix(in srgb, var(--fg) 86%, var(--fg-muted));
+}
+
+.chat-markdown .chat-md-h1,
+.chat-markdown .chat-md-h2,
+.chat-markdown .chat-md-h3 {
+  margin: 0 0 0.44em;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-bright);
+}
+
+.chat-markdown .chat-md-h1 {
+  font-size: 1.03em;
+}
+
+.chat-markdown .chat-md-h2 {
+  font-size: 0.98em;
+}
+
+.chat-markdown .chat-md-h3 {
+  font-size: 0.93em;
+}
+
+.chat-markdown .chat-md-rule {
+  margin: 0.5em 0;
+  border: none;
+  border-top: 1px solid color-mix(in srgb, var(--fg-muted) 55%, transparent);
+}
+
+.chat-markdown .chat-md-pre {
+  margin: 0.45em 0 0.52em;
+  padding: 7px 9px;
+  overflow-x: auto;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--bg-surface) 84%, black);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--bg-elevated) 72%, transparent);
+}
+
+.chat-markdown .chat-md-pre[data-lang]::before {
+  content: attr(data-lang);
+  display: block;
+  margin-bottom: 5px;
+  font-size: 8px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+.chat-markdown code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+.chat-markdown .chat-md-inline-code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--bg-elevated) 70%, transparent);
+  color: var(--fg-bright);
+}
+
+.chat-markdown .chat-md-pre code {
+  display: block;
+  white-space: pre;
+}
+
+.chat-markdown .chat-md-link {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px dotted color-mix(in srgb, var(--accent) 56%, transparent);
+}
+
+.chat-markdown .chat-md-link:hover {
+  color: var(--fg-bright);
+  border-bottom-color: currentColor;
+}
+
+.chat-markdown strong {
+  color: var(--fg-bright);
+  font-weight: 700;
+}
+
+.chat-markdown em {
+  color: color-mix(in srgb, var(--fg) 90%, var(--type-creative));
+}
+
+.chat-markdown del {
+  color: var(--fg-muted);
+}
+
+.chat-msg.streaming .chat-markdown::after {
+  content: "\258c";
+  display: inline-block;
+  margin-left: 2px;
+  color: var(--accent);
+  animation: chat-stream-caret 0.82s steps(1, end) infinite;
+}
+
+@keyframes chat-stream-caret {
+  0%, 48% {
+    opacity: 1;
+  }
+  49%, 100% {
+    opacity: 0;
+  }
+}
+
 .chat-msg.user {
   font-family: var(--font-mono);
   color: var(--fg-bright);
@@ -2968,6 +3116,34 @@ button.agent-profile-window-dot.close:hover {
   color: var(--kyogre-panel-muted);
 }
 
+#profile-panel.visible .chat-markdown blockquote {
+  border-left-color: color-mix(in srgb, var(--kyogre-panel-accent) 70%, transparent);
+  color: color-mix(in srgb, var(--kyogre-panel-text) 80%, var(--kyogre-panel-muted));
+}
+
+#profile-panel.visible .chat-markdown .chat-md-pre {
+  background: color-mix(in srgb, var(--kyogre-panel-elev) 88%, black);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--kyogre-panel-border) 70%, transparent);
+}
+
+#profile-panel.visible .chat-markdown .chat-md-inline-code {
+  background: color-mix(in srgb, var(--kyogre-panel-elev) 78%, transparent);
+  color: var(--kyogre-panel-text);
+}
+
+#profile-panel.visible .chat-markdown .chat-md-link {
+  color: var(--kyogre-panel-accent);
+  border-bottom-color: color-mix(in srgb, var(--kyogre-panel-accent) 56%, transparent);
+}
+
+#profile-panel.visible .chat-markdown strong {
+  color: var(--kyogre-panel-text);
+}
+
+#profile-panel.visible .chat-markdown em {
+  color: color-mix(in srgb, var(--kyogre-panel-accent) 58%, var(--kyogre-panel-text));
+}
+
 #profile-panel.visible #chat-input-wrap {
   padding: 8px 10px;
   gap: 8px;
@@ -3781,4 +3957,63 @@ button.agent-profile-window-dot.close:hover {
 
 #loading.hidden {
   display: none;
+}
+
+/* ---- Webview overlay (embedded browser for photoblog etc.) ---- */
+#webview-overlay {
+  position: fixed;
+  z-index: 50;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+}
+#webview-overlay[hidden] {
+  display: none;
+}
+.webview-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--pixel-border-lo);
+  background: var(--bg);
+  flex-shrink: 0;
+}
+.webview-title {
+  flex: 1;
+  font-family: "Departure Mono", ui-monospace, monospace;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#webview-external,
+#webview-close {
+  font-family: "Departure Mono", ui-monospace, monospace;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  background: none;
+  border: 1px solid var(--pixel-border-lo);
+  color: var(--fg-muted);
+  padding: 2px 8px;
+  cursor: pointer;
+}
+#webview-external:hover,
+#webview-close:hover {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+}
+#webview-frame {
+  flex: 1;
+  width: 100%;
+  border: none;
+  background: #fff;
 }

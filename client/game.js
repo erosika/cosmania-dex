@@ -1006,6 +1006,7 @@ function generateFallbackRoster() {
     { name: "photoblogger", type: "production", tagline: "Curates the visual record." },
     { name: "vitals", type: "embodied", tagline: "Reads the body." },
     { name: "eros", type: "embodied", tagline: "Sensation as architecture." },
+    { name: "dj", type: "production", tagline: "Obsessive music nerd." },
   ];
   return names.map((n) => ({
     ...n,
@@ -2823,7 +2824,7 @@ function drawFloatingModelTag(ctx, modelMeta, spriteX, spriteY, spriteSize, time
     ctx.drawImage(iconImage, left, top, iconSize, iconSize);
   } else if (modelMeta.label) {
     const fallback = modelMeta.label.slice(0, 6);
-    ctx.font = "7px 'Departure Mono', monospace";
+    ctx.font = "7px 'Departure Mono', 'Noto Emoji', 'Noto Color Emoji', monospace";
     ctx.textAlign = "left";
     ctx.textBaseline = "top";
     ctx.shadowColor = "rgba(0, 0, 0, 0.6)";
@@ -2931,7 +2932,7 @@ function drawAquarium(timestamp) {
     const drawIndicatorTag = (text, centerX, centerY, fg, alpha = 1) => {
       if (!text) return;
       ctx.save();
-      ctx.font = "8px 'Departure Mono', monospace";
+      ctx.font = "8px 'Departure Mono', 'Noto Emoji', 'Noto Color Emoji', monospace";
       ctx.textAlign = "center";
       ctx.textBaseline = "top";
       const tw = Math.ceil(ctx.measureText(text).width);
@@ -2990,7 +2991,7 @@ function drawAquarium(timestamp) {
     ctx.save();
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
-    ctx.font = "8px 'Departure Mono', monospace";
+    ctx.font = "8px 'Departure Mono', 'Noto Emoji', 'Noto Color Emoji', monospace";
     const nameWidth = Math.ceil(ctx.measureText(nameText).width) + 8;
     const nameHeight = 10;
     const nameLeft = Math.floor(labelX - nameWidth / 2);
@@ -3005,7 +3006,7 @@ function drawAquarium(timestamp) {
 
     if (agent.lastRun) {
       const runText = timeAgo(agent.lastRun).toUpperCase();
-      ctx.font = "7px 'Departure Mono', monospace";
+      ctx.font = "7px 'Departure Mono', 'Noto Emoji', 'Noto Color Emoji', monospace";
       const runWidth = Math.ceil(ctx.measureText(runText).width) + 6;
       const runHeight = 8;
       const runLeft = Math.floor(labelX - runWidth / 2);
@@ -3252,6 +3253,237 @@ function setTracePanelVisible(visible) {
   toggleBtn.setAttribute("aria-pressed", visible ? "true" : "false");
 }
 
+function normalizeChatText(value) {
+  return String(value ?? "").replace(/\r\n?/g, "\n");
+}
+
+function sanitizeMarkdownUrl(rawUrl) {
+  const source = String(rawUrl ?? "").trim();
+  if (!source) return null;
+  if (source.startsWith("/")) return source;
+  try {
+    const parsed = new URL(source, window.location.origin);
+    const protocol = parsed.protocol.toLowerCase();
+    if (protocol === "http:" || protocol === "https:" || protocol === "mailto:") {
+      return parsed.href;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function renderMarkdownInline(rawText) {
+  let text = String(rawText ?? "");
+  const slots = [];
+  const stash = (html) => {
+    const token = `\u0001${slots.length}\u0001`;
+    slots.push(html);
+    return token;
+  };
+
+  text = text.replace(/`([^`\n]+)`/g, (_match, code) => {
+    return stash(`<code class="chat-md-inline-code">${escapeHtml(code)}</code>`);
+  });
+
+  text = text.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_match, label, href) => {
+    const safeHref = sanitizeMarkdownUrl(href);
+    const safeLabel = escapeHtml(label);
+    if (!safeHref) {
+      return `${safeLabel} (${escapeHtml(href)})`;
+    }
+    return stash(
+      `<a class="chat-md-link" href="${escapeHtml(safeHref)}" target="_blank" rel="noopener noreferrer">${safeLabel}</a>`
+    );
+  });
+
+  text = escapeHtml(text);
+  text = text
+    .replace(/\*\*([^*][\s\S]*?)\*\*/g, "<strong>$1</strong>")
+    .replace(/~~([^~\n][^~\n]*?)~~/g, "<del>$1</del>")
+    .replace(/(^|[\s(])\*([^*\n][^*\n]*?)\*(?=[\s).,!?:;]|$)/g, "$1<em>$2</em>");
+
+  return text.replace(/\u0001(\d+)\u0001/g, (_match, idx) => slots[Number(idx)] || "");
+}
+
+function renderMarkdownBlocks(rawBlock) {
+  const lines = normalizeChatText(rawBlock).split("\n");
+  const html = [];
+  let i = 0;
+
+  const isRuleLine = (line) => /^(-{3,}|\*{3,}|_{3,})\s*$/.test(line.trim());
+  const isHeadingLine = (line) => /^(#{1,3})\s+/.test(line);
+  const isQuoteLine = (line) => /^>\s?/.test(line);
+  const isBulletLine = (line) => /^[-*]\s+/.test(line);
+  const isNumberLine = (line) => /^\d+\.\s+/.test(line);
+
+  while (i < lines.length) {
+    const line = lines[i] ?? "";
+    if (!line.trim()) {
+      i += 1;
+      continue;
+    }
+
+    const heading = line.match(/^(#{1,3})\s+(.+)$/);
+    if (heading) {
+      const level = Math.min(3, heading[1].length);
+      html.push(`<div class="chat-md-h${level}">${renderMarkdownInline(heading[2].trim())}</div>`);
+      i += 1;
+      continue;
+    }
+
+    if (isRuleLine(line)) {
+      html.push('<hr class="chat-md-rule" />');
+      i += 1;
+      continue;
+    }
+
+    if (isQuoteLine(line)) {
+      const quoteLines = [];
+      while (i < lines.length && isQuoteLine(lines[i] ?? "")) {
+        quoteLines.push((lines[i] ?? "").replace(/^>\s?/, ""));
+        i += 1;
+      }
+      const quoteText = quoteLines.map((part) => renderMarkdownInline(part)).join("<br />");
+      html.push(`<blockquote>${quoteText}</blockquote>`);
+      continue;
+    }
+
+    if (isBulletLine(line)) {
+      const items = [];
+      while (i < lines.length && isBulletLine(lines[i] ?? "")) {
+        items.push((lines[i] ?? "").replace(/^[-*]\s+/, ""));
+        i += 1;
+      }
+      html.push(`<ul>${items.map((item) => `<li>${renderMarkdownInline(item)}</li>`).join("")}</ul>`);
+      continue;
+    }
+
+    if (isNumberLine(line)) {
+      const items = [];
+      while (i < lines.length && isNumberLine(lines[i] ?? "")) {
+        items.push((lines[i] ?? "").replace(/^\d+\.\s+/, ""));
+        i += 1;
+      }
+      html.push(`<ol>${items.map((item) => `<li>${renderMarkdownInline(item)}</li>`).join("")}</ol>`);
+      continue;
+    }
+
+    const paragraph = [];
+    while (
+      i < lines.length &&
+      (lines[i] ?? "").trim() &&
+      !isHeadingLine(lines[i] ?? "") &&
+      !isRuleLine(lines[i] ?? "") &&
+      !isQuoteLine(lines[i] ?? "") &&
+      !isBulletLine(lines[i] ?? "") &&
+      !isNumberLine(lines[i] ?? "")
+    ) {
+      paragraph.push(lines[i] ?? "");
+      i += 1;
+    }
+    const text = paragraph.map((part) => renderMarkdownInline(part.trimEnd())).join("<br />");
+    html.push(`<p>${text}</p>`);
+  }
+
+  return html.join("");
+}
+
+function renderChatMarkdown(rawText) {
+  const text = normalizeChatText(rawText);
+  if (!text.trim()) return "";
+
+  const chunks = [];
+  const fence = /```([a-zA-Z0-9_-]+)?\n([\s\S]*?)```/g;
+  let cursor = 0;
+  let match = fence.exec(text);
+
+  while (match) {
+    const before = text.slice(cursor, match.index);
+    if (before.trim()) {
+      chunks.push(renderMarkdownBlocks(before));
+    } else if (before) {
+      chunks.push("");
+    }
+
+    const lang = (match[1] || "").trim();
+    const body = (match[2] || "").replace(/\n$/, "");
+    const safeLang = escapeHtml(lang);
+    chunks.push(
+      `<pre class="chat-md-pre"${safeLang ? ` data-lang="${safeLang}"` : ""}><code>${escapeHtml(body)}</code></pre>`
+    );
+    cursor = match.index + match[0].length;
+    match = fence.exec(text);
+  }
+
+  const rest = text.slice(cursor);
+  if (rest.trim()) {
+    chunks.push(renderMarkdownBlocks(rest));
+  } else if (rest) {
+    chunks.push("");
+  }
+
+  if (chunks.length === 0) {
+    return `<p>${renderMarkdownInline(text)}</p>`;
+  }
+  return chunks.join("");
+}
+
+function streamChunkSize(textLength) {
+  if (textLength > 1800) return 34;
+  if (textLength > 1200) return 24;
+  if (textLength > 800) return 16;
+  if (textLength > 480) return 10;
+  if (textLength > 220) return 7;
+  return 4;
+}
+
+function streamChunkDelayMs(textLength) {
+  if (textLength > 1800) return 8;
+  if (textLength > 1200) return 10;
+  if (textLength > 800) return 12;
+  if (textLength > 400) return 14;
+  return 18;
+}
+
+function sleepMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function streamAssistantReply(container, agentType, fullText) {
+  if (!container) return;
+  const text = normalizeChatText(fullText);
+  if (!text) return;
+
+  const streamEl = document.createElement("div");
+  streamEl.className = "chat-msg agent streaming";
+  streamEl.setAttribute("data-type", agentType || "");
+  const markdownEl = document.createElement("div");
+  markdownEl.className = "chat-markdown";
+  streamEl.appendChild(markdownEl);
+  container.appendChild(streamEl);
+  container.scrollTop = container.scrollHeight;
+
+  const size = streamChunkSize(text.length);
+  const delay = streamChunkDelayMs(text.length);
+  let cursor = 0;
+
+  while (cursor < text.length) {
+    if (!streamEl.isConnected) return;
+    cursor = Math.min(text.length, cursor + size);
+    markdownEl.innerHTML = renderChatMarkdown(text.slice(0, cursor));
+    container.scrollTop = container.scrollHeight;
+    if (cursor < text.length) {
+      await sleepMs(delay);
+    }
+  }
+
+  if (!streamEl.isConnected) return;
+  markdownEl.innerHTML = renderChatMarkdown(text);
+  streamEl.classList.remove("streaming");
+  container.scrollTop = container.scrollHeight;
+}
+
 function renderChatMessages(agentName) {
   const container = document.getElementById("chat-messages");
   const history = getHistory(agentName);
@@ -3264,6 +3496,7 @@ function renderChatMessages(agentName) {
 
   container.innerHTML = history
     .map((msg, idx) => {
+      const content = `<div class="chat-markdown">${renderChatMarkdown(msg.content)}</div>`;
       if (msg.role === "user") {
         // Check for attached photo
         if (msg.photo) {
@@ -3271,16 +3504,16 @@ function renderChatMessages(agentName) {
             ? `<img class="chat-photo-thumb" src="${msg.photo.objectUrl}" alt="${escapeHtml(msg.photo.filename)}" />`
             : "";
           const label = `<div style="font-family: var(--font-mono); font-size: 9px; color: var(--type-production); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.06em;">img: ${escapeHtml(msg.photo.filename)}</div>`;
-          return `<div class="chat-msg user">${imgTag}${label}${escapeHtml(msg.content)}</div>`;
+          return `<div class="chat-msg user">${imgTag}${label}${content}</div>`;
         }
-        return `<div class="chat-msg user">${escapeHtml(msg.content)}</div>`;
+        return `<div class="chat-msg user">${content}</div>`;
       }
       const tcCount = msg.toolCalls ? msg.toolCalls.length : 0;
       const tcBadge = tcCount > 0
         ? `<span class="chat-msg-tc-badge" data-msg-idx="${idx}">${tcCount} call${tcCount !== 1 ? "s" : ""}</span>`
         : "";
       const clickable = tcCount > 0 ? ` has-traces` : "";
-      return `<div class="chat-msg agent${clickable}" data-type="${profileAgent?.type || ""}" data-msg-idx="${idx}">${escapeHtml(msg.content)}${tcBadge}</div>`;
+      return `<div class="chat-msg agent${clickable}" data-type="${profileAgent?.type || ""}" data-msg-idx="${idx}">${content}${tcBadge}</div>`;
     })
     .join("");
 
@@ -3444,18 +3677,31 @@ async function sendChat(agentName, message) {
       });
     } else {
       thinkingEl.remove();
-      const msgEntry = { role: "assistant", content: data.response };
+      const responseText = String(data.response || "");
+      const streamTarget = profileAgent && profileAgent.name === agentName
+        ? document.getElementById("chat-messages")
+        : null;
+      if (streamTarget && responseText.trim()) {
+        await streamAssistantReply(streamTarget, profileAgent?.type || "", responseText);
+      }
+
+      const msgEntry = { role: "assistant", content: responseText };
       // Attach tool calls to the message so they persist and can be inspected
       if (data.toolCalls && data.toolCalls.length > 0) {
         msgEntry.toolCalls = data.toolCalls;
       }
       history.push(msgEntry);
-      logAgentEvent(truncateText(String(data.response || "").replace(/\s+/g, " "), 84), {
+      logAgentEvent(truncateText(responseText.replace(/\s+/g, " "), 84), {
         agentName,
         kind: "chat",
-        dedupeKey: `reply:${agentName}:${String(data.response || "").slice(0, 56)}`,
+        dedupeKey: `reply:${agentName}:${responseText.slice(0, 56)}`,
         cooldownMs: 900,
       });
+
+      // Auto-open URL if the agent produced one (e.g. photoblog publish)
+      if (data.openUrl) {
+        openWebview(data.openUrl);
+      }
 
       // Process tool calls into trace panel
       if (data.toolCalls && data.toolCalls.length > 0) {
@@ -3493,8 +3739,10 @@ async function sendChat(agentName, message) {
 
   chatSending = false;
   sendBtn.disabled = false;
-  renderChatMessages(agentName);
-  input.focus();
+  if (profileAgent && profileAgent.name === agentName) {
+    renderChatMessages(agentName);
+    input.focus();
+  }
 }
 
 // ---- Voice Playback ----
@@ -3669,7 +3917,7 @@ function renderCampfireMessages() {
 
       return `<div class="campfire-msg ${msgCls}">
         <span class="agent-label ${labelCls}" data-type="${agentType}">${msg.agent}</span>
-        <span class="msg-body">${escapeHtml(msg.message)}</span>
+        <div class="msg-body"><div class="chat-markdown">${renderChatMarkdown(msg.message)}</div></div>
       </div>`;
     })
     .join("");
@@ -3974,6 +4222,15 @@ function hideProfile() {
 // ---- Input Handling ----
 
 function handleKeyDown(e) {
+  // Webview intercepts Escape when open
+  if (webviewOpen) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closeWebview();
+    }
+    return;
+  }
+
   // Model picker intercepts all keys when open
   if (modelPickerOpen) {
     if (e.key === "Escape" || e.key === "Backspace") {
@@ -4431,7 +4688,7 @@ function timeAgo(iso) {
 }
 
 function escapeHtml(str) {
-  return str
+  return String(str ?? "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
@@ -4505,7 +4762,7 @@ function animateProfileSprite(timestamp) {
     if (iconImage) {
       pctx.drawImage(iconImage, x, y, iconSize, iconSize);
     } else if (modelMeta.label) {
-      pctx.font = "12px 'Departure Mono', monospace";
+      pctx.font = "12px 'Departure Mono', 'Noto Emoji', 'Noto Color Emoji', monospace";
       pctx.textAlign = "left";
       pctx.textBaseline = "top";
       pctx.shadowColor = "rgba(0, 0, 0, 0.6)";
@@ -4560,6 +4817,30 @@ function closeModelPicker() {
   modelPickerAgent = null;
   const picker = document.getElementById("model-picker");
   picker.hidden = true;
+}
+
+// ---- Webview overlay ----
+let webviewOpen = false;
+let webviewUrl = null;
+
+function openWebview(url, title) {
+  const overlay = document.getElementById("webview-overlay");
+  const frame = document.getElementById("webview-frame");
+  const titleEl = document.getElementById("webview-title");
+  webviewUrl = url;
+  webviewOpen = true;
+  titleEl.textContent = title || new URL(url).hostname;
+  frame.src = url;
+  overlay.hidden = false;
+}
+
+function closeWebview() {
+  const overlay = document.getElementById("webview-overlay");
+  const frame = document.getElementById("webview-frame");
+  frame.src = "about:blank";
+  overlay.hidden = true;
+  webviewOpen = false;
+  webviewUrl = null;
 }
 
 function updateModelPickerDisplay() {
@@ -4638,6 +4919,13 @@ function initModelPicker() {
   document.getElementById("model-picker-cancel").addEventListener("click", () => closeModelPicker());
 }
 
+function initWebview() {
+  document.getElementById("webview-close").addEventListener("click", closeWebview);
+  document.getElementById("webview-external").addEventListener("click", () => {
+    if (webviewUrl) window.open(webviewUrl, "_blank", "noopener");
+  });
+}
+
 // ---- Main Loop ----
 
 async function init() {
@@ -4658,6 +4946,7 @@ async function init() {
   initAgentMenu();
   initAgentProfileWindow();
   initModelPicker();
+  initWebview();
   primeModelIcons();
 
   const traceToggleBtn = document.getElementById("trace-toggle");

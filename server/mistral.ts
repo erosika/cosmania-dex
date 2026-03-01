@@ -61,6 +61,8 @@ export interface ChatResult {
   inputTokens: number;
   outputTokens: number;
   toolCalls?: ExecutedToolCall[];
+  /** URL to auto-open in a new tab (e.g. after a successful photoblog publish). */
+  openUrl?: string;
 }
 
 export interface StandupLine {
@@ -363,7 +365,7 @@ const TOOL_SCHEMAS: Record<string, any> = {
     type: "function",
     function: {
       name: "analyze_uploaded_image",
-      description: "Analyze an uploaded photo using vision LLM. Returns scores (overall, composition, aesthetic, technical 1-10), mood keywords, tags, description, and suggested title. Use this when eri uploads an image.",
+      description: "Analyze an uploaded photo using vision LLM. Returns mood keywords, tags, description, suggested title, and personality signals. Use this when eri uploads an image.",
       parameters: {
         type: "object",
         properties: {
@@ -414,10 +416,6 @@ const TOOL_SCHEMAS: Record<string, any> = {
             type: "object",
             description: "Analysis data to store with the photo",
             properties: {
-              scoreOverall: { type: "number" },
-              scoreComposition: { type: "number" },
-              scoreAesthetic: { type: "number" },
-              scoreTechnical: { type: "number" },
               mood: { type: "array", items: { type: "string" } },
               tags: { type: "array", items: { type: "string" } },
               description: { type: "string" },
@@ -473,7 +471,7 @@ const TOOL_SCHEMAS: Record<string, any> = {
     type: "function",
     function: {
       name: "get_catalog_stats",
-      description: "Get photo catalog statistics: total photos, analyzed count, top-scored photos, recent batches.",
+      description: "Get photo catalog statistics: total photos, analyzed count, recent additions.",
       parameters: {
         type: "object",
         properties: {},
@@ -678,9 +676,9 @@ const TOOL_HANDLERS: Record<string, (args: Record<string, any>) => Promise<{ suc
       return { success: false, data: null, error: `Upload not found: ${args.upload_id}` };
     }
 
-    const apiKey = process.env.OPENROUTER_API_KEY;
+    const apiKey = process.env.MISTRAL_API_KEY;
     if (!apiKey) {
-      return { success: false, data: null, error: "OPENROUTER_API_KEY not set" };
+      return { success: false, data: null, error: "MISTRAL_API_KEY not set" };
     }
 
     try {
@@ -688,14 +686,10 @@ const TOOL_HANDLERS: Record<string, (args: Record<string, any>) => Promise<{ suc
       const buffer = readFileSync(upload.path);
       const base64 = Buffer.from(buffer).toString("base64");
 
-      const model = process.env.PHOTO_ANALYSIS_MODEL || "google/gemini-2.0-flash-001";
+      const model = process.env.PHOTO_ANALYSIS_MODEL || "pixtral-large-latest";
 
       const prompt = `Analyze this photograph. Respond with ONLY a JSON object (no markdown, no code fences) with these exact fields:
 {
-  "scoreOverall": <number 1-10, overall quality>,
-  "scoreComposition": <number 1-10, framing, rule of thirds, leading lines, balance>,
-  "scoreAesthetic": <number 1-10, mood, color palette, light quality, emotional impact>,
-  "scoreTechnical": <number 1-10, focus accuracy, exposure, noise, dynamic range>,
   "mood": [<2-4 mood keywords, e.g. "serene", "melancholic", "energetic">],
   "tags": [<3-6 content tags, e.g. "street", "portrait", "architecture", "night">],
   "description": "<2-3 sentence description of the scene, subjects, and what makes it interesting or unremarkable>",
@@ -703,14 +697,13 @@ const TOOL_HANDLERS: Record<string, (args: Record<string, any>) => Promise<{ suc
   "personalitySignals": "<1-2 sentences about what this image choice reveals about the photographer -- recurring interests, aesthetic tendencies, what they notice>"
 }
 
-Be a rigorous critic. Most casual photos score 4-6. Only exceptional work scores 8+. Technical flaws (blur, noise, poor exposure) lower the technical score. Boring composition lowers composition. Score honestly. The personalitySignals field should read like a curator's observation, not a compliment.`;
+Describe what you see with precision. The personalitySignals field should read like a curator's observation, not a compliment.`;
 
-      const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      const response = await fetch("https://api.mistral.ai/v1/chat/completions", {
         method: "POST",
         headers: {
           Authorization: `Bearer ${apiKey}`,
           "Content-Type": "application/json",
-          "X-Title": "cosmania-photoblogger",
         },
         body: JSON.stringify({
           model,
@@ -728,7 +721,7 @@ Be a rigorous critic. Most casual photos score 4-6. Only exceptional work scores
 
       if (!response.ok) {
         const text = await response.text();
-        return { success: false, data: null, error: `OpenRouter ${response.status}: ${text.slice(0, 200)}` };
+        return { success: false, data: null, error: `Mistral vision ${response.status}: ${text.slice(0, 200)}` };
       }
 
       const data = await response.json() as any;
@@ -983,6 +976,17 @@ function buildAgentSystemPrompt(profile: AgentProfile, honchoContext?: string): 
  *
  * Traced via W&B Weave -- every call logged with inputs/outputs/tokens.
  */
+
+/** Extract a URL to auto-open from executed tool calls (e.g. publish_blog deployUrl). */
+function extractOpenUrl(calls: ExecutedToolCall[]): string | undefined {
+  for (const tc of calls) {
+    if (tc.name === "publish_blog" && tc.result.success && tc.result.data?.deployUrl) {
+      return tc.result.data.deployUrl;
+    }
+  }
+  return undefined;
+}
+
 export async function chatWithAgent(
   agentName: string,
   userMessage: string,
@@ -990,7 +994,7 @@ export async function chatWithAgent(
   history: ChatMessage[] = [],
 ): Promise<ChatResult> {
   // Wrap in a dynamically-named Weave op so each trace shows the agent name
-  const inner = tracedAs(`chat:${agentName}`, async () => _chatWithAgentInner(agentName, userMessage, profile, history));
+  const inner = tracedAs(`chat_${agentName}`, async () => _chatWithAgentInner(agentName, userMessage, profile, history));
   return inner();
 }
 
@@ -1194,22 +1198,28 @@ async function _chatWithAgentInner(
       recordExchange(agentName, userMessage, content, executedCalls.length > 0 ? executedCalls : undefined).catch(() => {});
     }
 
+    // Check if a publish_blog tool call succeeded -- surface the deploy URL
+    const openUrl = extractOpenUrl(executedCalls);
+
     return {
       response: content,
       model: result.model || getAgentModel(agentName),
       inputTokens: totalInputTokens,
       outputTokens: totalOutputTokens,
       ...(executedCalls.length > 0 ? { toolCalls: executedCalls } : {}),
+      ...(openUrl ? { openUrl } : {}),
     };
   }
 
   // Fallback: hit max iterations without a text response
+  const openUrl = extractOpenUrl(executedCalls);
   return {
     response: `[${agentName} ran out of tool iterations]`,
     model: getAgentModel(agentName),
     inputTokens: totalInputTokens,
     outputTokens: totalOutputTokens,
     ...(executedCalls.length > 0 ? { toolCalls: executedCalls } : {}),
+    ...(openUrl ? { openUrl } : {}),
   };
 }
 

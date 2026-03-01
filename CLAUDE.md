@@ -46,7 +46,7 @@ DEX_PORT=3333                 # server port
 COSMANIA_URL=http://localhost:8080  # Cosmania health server
 MISTRAL_API_KEY=              # for agent conversations
 ELEVENLABS_API_KEY=           # for voice synthesis
-WANDB_API_KEY=                # for W&B Weave tracing
+WANDB_API_KEY=                # for W&B Weave tracing (auto-enabled when set)
 DISCORD_TOKEN=                # Discord bot token
 DISCORD_GUILD_ID=             # Target Discord server
 ```
