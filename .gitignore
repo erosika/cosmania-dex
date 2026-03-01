@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+bun.lock
+*.db
+*.db-wal
+*.db-shm
+server/uploads/
+server/data/

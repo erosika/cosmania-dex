@@ -1,0 +1,21 @@
+{
+  "name": "cosmania-dex",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "bun run server/main.ts",
+    "start": "bun run server/main.ts",
+    "discord": "bun run discord/bot.ts",
+    "eval": "bun run server/eval.ts"
+  },
+  "dependencies": {
+    "@honcho-ai/sdk": "^2.0.1",
+    "@mistralai/mistralai": "^1.5.0",
+    "discord.js": "^14.17.0",
+    "weave": "^0.12.0"
+  },
+  "devDependencies": {
+    "bun-types": "^1.3.10",
+    "typescript": "^5.9.3"
+  }
+}

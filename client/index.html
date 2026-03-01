@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>COSMANIA DEX</title>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;700&family=Space+Mono:wght@400;700&display=swap');
+  </style>
+</head>
+<body>
+
+<div id="dex">
+  <div id="status-bar">
+    <span class="title">COSMANIA DEX</span>
+    <span class="info" id="status-info">loading...</span>
+  </div>
+
+  <div id="canvas-wrap">
+    <canvas id="grid-canvas"></canvas>
+  </div>
+
+  <div id="controls-bar">
+    <span class="control-hint"><kbd>&larr;</kbd><kbd>&rarr;</kbd><kbd>&uarr;</kbd><kbd>&darr;</kbd> navigate</span>
+    <span class="control-hint"><kbd>Enter</kbd> select</span>
+    <span class="control-hint"><kbd>Tab</kbd> view</span>
+    <span class="control-hint"><kbd>Space</kbd> standup</span>
+  </div>
+</div>
+
+<div id="bubble-overlay"></div>
+
+<aside id="event-log-panel" hidden>
+  <div class="event-log-header">
+    <span class="event-log-title">AGENT EVENTS</span>
+    <button
+      id="event-log-toggle"
+      type="button"
+      aria-expanded="true"
+      aria-label="Collapse event log"
+    >&lt;</button>
+  </div>
+  <div id="event-log-controls">
+    <input
+      id="event-log-search"
+      type="text"
+      autocomplete="off"
+      placeholder="search events + traces"
+      aria-label="Search events"
+    >
+    <select id="event-log-kind" aria-label="Filter event kind">
+      <option value="all">all kinds</option>
+      <option value="run">traces</option>
+      <option value="chat">chat</option>
+      <option value="social">social</option>
+      <option value="state">state</option>
+      <option value="info">info</option>
+    </select>
+    <button id="event-log-semantic" type="button" aria-pressed="true" title="semantic search on/off">SEM</button>
+    <button id="event-log-live" type="button" title="return to live feed">LIVE</button>
+  </div>
+  <div id="event-log-entries"></div>
+</aside>
+
+<div id="agent-menu" hidden>
+  <div class="agent-menu-header">
+    <span class="agent-menu-label">AGENT</span>
+    <span class="agent-menu-name" id="agent-menu-name"></span>
+  </div>
+  <div class="agent-menu-body" id="agent-menu-body">menu content coming soon...</div>
+  <div class="agent-menu-actions">
+    <button id="agent-menu-profile" type="button">PROFILE</button>
+    <button id="agent-menu-close" type="button">CLOSE</button>
+  </div>
+</div>
+
+<div id="agent-profile-window" hidden>
+  <div class="agent-profile-window-header">
+    <div class="agent-profile-window-controls">
+      <button class="agent-profile-window-dot close" id="agent-profile-window-close-dot" type="button" aria-label="Close mini profile"></button>
+      <span class="agent-profile-window-dot"></span>
+      <span class="agent-profile-window-dot"></span>
+    </div>
+    <div class="agent-profile-window-title">AGENT HUD</div>
+    <div class="agent-profile-window-follow">FOLLOW</div>
+  </div>
+  <div class="agent-profile-window-body">
+    <div class="agent-profile-window-name" id="agent-profile-window-name"></div>
+    <div class="agent-profile-window-badges">
+      <span class="agent-profile-pill" id="agent-profile-window-type"></span>
+      <span class="agent-profile-pill" id="agent-profile-window-tier"></span>
+      <span class="agent-profile-pill" id="agent-profile-window-state"></span>
+    </div>
+    <div class="agent-profile-window-meter">
+      <span class="agent-profile-window-meter-label">UP</span>
+      <div class="agent-profile-window-meter-track">
+        <span class="agent-profile-window-meter-fill" id="agent-profile-window-uptime-fill"></span>
+      </div>
+      <span class="agent-profile-window-meter-value" id="agent-profile-window-uptime"></span>
+    </div>
+    <div class="agent-profile-window-meter">
+      <span class="agent-profile-window-meter-label">RUN</span>
+      <div class="agent-profile-window-meter-track">
+        <span class="agent-profile-window-meter-fill runs" id="agent-profile-window-runs-fill"></span>
+      </div>
+      <span class="agent-profile-window-meter-value" id="agent-profile-window-runs"></span>
+    </div>
+    <div class="agent-profile-window-meta">
+      <span id="agent-profile-window-last-run"></span>
+      <span id="agent-profile-window-cost"></span>
+      <span id="agent-profile-window-circuit"></span>
+    </div>
+    <div class="agent-profile-window-bubble" id="agent-profile-window-bubble"></div>
+  </div>
+  <div class="agent-profile-window-actions">
+    <button id="agent-profile-window-prev" type="button">PREV</button>
+    <button id="agent-profile-window-open-full" type="button">OPEN FULL</button>
+    <button id="agent-profile-window-next" type="button">NEXT</button>
+    <button id="agent-profile-window-close" type="button">CLOSE</button>
+  </div>
+</div>
+
+<div id="profile-panel">
+  <div id="profile-header">
+    <canvas id="profile-sprite" width="128" height="128"></canvas>
+    <div id="profile-info">
+      <h1 id="profile-name"></h1>
+      <div class="tagline" id="profile-tagline"></div>
+      <div style="margin-top: 6px;">
+        <span class="type-badge" id="profile-type-badge"></span>
+        <span class="state-dot" id="profile-state-dot" style="margin-left: 8px;"></span>
+      </div>
+    </div>
+  </div>
+  <div id="profile-stats"></div>
+  <div id="profile-bubble">
+    <div class="bubble-text" id="profile-bubble-text"></div>
+  </div>
+  <div id="profile-workspace">
+    <div id="chat-panel">
+      <div class="panel-header">
+        <span class="panel-label">CHAT</span>
+        <span class="chat-status" id="chat-agent-label"></span>
+      </div>
+      <div id="chat-messages"></div>
+    </div>
+    <div class="panel-divider"></div>
+    <div id="trace-panel">
+      <div class="panel-header">
+        <span class="panel-label">TRACE</span>
+        <div class="trace-header-actions">
+          <span class="trace-status" id="trace-status"></span>
+          <button id="trace-toggle" type="button" aria-pressed="true">HIDE TRACE</button>
+        </div>
+      </div>
+      <div id="trace-entries"></div>
+    </div>
+  </div>
+  <div id="photo-upload-preview" class="photo-upload-preview" style="display: none;">
+    <img id="photo-upload-thumb" />
+    <span id="photo-upload-name"></span>
+    <button id="photo-upload-remove" type="button">&times;</button>
+  </div>
+  <div id="chat-input-wrap">
+    <span class="chat-caret">&gt;</span>
+    <input id="chat-input" type="text" placeholder="talk to this agent..." autocomplete="off" />
+    <input id="photo-file-input" type="file" accept="image/jpeg,image/png,image/webp" style="display: none;" />
+    <button id="photo-upload-btn" type="button" title="Upload photo" style="display: none;">IMG</button>
+    <button id="chat-send">SEND</button>
+  </div>
+  <div id="profile-invite">
+    <div class="invite-label">pair with</div>
+    <div id="invite-agent-grid"></div>
+  </div>
+  <div id="profile-controls">
+    <span class="control-hint"><kbd>Esc</kbd> back</span>
+    <span class="control-hint"><kbd>S</kbd> speak</span>
+    <span class="control-hint"><kbd>T</kbd> trace</span>
+    <span class="control-hint"><kbd>Enter</kbd> send</span>
+    <span class="control-hint"><kbd>M</kbd> model</span>
+    <span class="control-hint"><kbd>Space</kbd> campfire</span>
+  </div>
+</div>
+
+<div id="campfire-panel">
+  <div id="campfire-header">
+    <span class="campfire-title">CAMPFIRE</span>
+    <span class="campfire-session" id="campfire-session"></span>
+  </div>
+  <div id="campfire-select">
+    <div class="campfire-select-label">select agents</div>
+    <div id="campfire-agent-grid"></div>
+    <div id="campfire-actions">
+      <button id="campfire-all">ALL</button>
+      <button id="campfire-none">NONE</button>
+    </div>
+  </div>
+  <div id="campfire-messages"></div>
+  <div id="campfire-input-wrap">
+    <span class="chat-caret">&gt;</span>
+    <input id="campfire-input" type="text" placeholder="say something to the group..." autocomplete="off" />
+    <button id="campfire-send">SEND</button>
+  </div>
+  <div id="campfire-controls">
+    <span class="control-hint"><kbd>Esc</kbd> back</span>
+    <span class="control-hint"><kbd>Enter</kbd> send</span>
+  </div>
+</div>
+
+<div id="model-picker" hidden>
+  <div class="model-picker-header">
+    <span class="model-picker-title">MODEL SELECT</span>
+    <span class="model-picker-agent" id="model-picker-agent"></span>
+  </div>
+  <div class="model-picker-viewport">
+    <button id="model-picker-prev" type="button">&lt;</button>
+    <div class="model-picker-card">
+      <img id="model-picker-img" width="128" height="128" />
+      <div id="model-picker-name" class="model-picker-name"></div>
+      <div id="model-picker-id" class="model-picker-model-id"></div>
+    </div>
+    <button id="model-picker-next" type="button">&gt;</button>
+  </div>
+  <div class="model-picker-dots" id="model-picker-dots"></div>
+  <div class="model-picker-actions">
+    <button id="model-picker-select" type="button">SELECT</button>
+    <button id="model-picker-reset" type="button">RESET</button>
+    <button id="model-picker-close" type="button">CLOSE</button>
+  </div>
+</div>
+
+<div id="world-menu" aria-label="world editor menu">
+  <button id="world-menu-toggle" type="button" aria-expanded="false" aria-controls="world-menu-panel">W</button>
+  <div id="world-menu-panel" hidden>
+    <div class="world-menu-title">WORLD TOPOLOGY</div>
+    <textarea id="world-layout-json" spellcheck="false"></textarea>
+    <div class="world-menu-actions">
+      <button id="world-layout-apply" type="button">APPLY</button>
+      <button id="world-layout-rebuild" type="button">REBUILD</button>
+      <button id="world-layout-copy" type="button">COPY</button>
+      <button id="world-layout-reset" type="button">RESET</button>
+    </div>
+    <div id="world-layout-status"></div>
+  </div>
+</div>
+
+<div id="loading">COSMANIA DEX</div>
+
+<script src="game.js"></script>
+</body>
+</html>
