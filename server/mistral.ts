@@ -9,7 +9,7 @@
 
 import { Mistral } from "@mistralai/mistralai";
 import * as weave from "weave";
-import { traced } from "./weave.ts";
+import { traced, tracedAs } from "./weave.ts";
 import {
   honchoEnabled,
   loadAgentContext,
@@ -66,6 +66,7 @@ export interface ChatResult {
 export interface StandupLine {
   agent: string;
   message: string;
+  toolCalls?: ExecutedToolCall[];
 }
 
 export interface GroupChatResult {
@@ -982,7 +983,18 @@ function buildAgentSystemPrompt(profile: AgentProfile, honchoContext?: string): 
  *
  * Traced via W&B Weave -- every call logged with inputs/outputs/tokens.
  */
-export const chatWithAgent = weave.op(async function chatWithAgent(
+export async function chatWithAgent(
+  agentName: string,
+  userMessage: string,
+  profile: AgentProfile,
+  history: ChatMessage[] = [],
+): Promise<ChatResult> {
+  // Wrap in a dynamically-named Weave op so each trace shows the agent name
+  const inner = tracedAs(`chat:${agentName}`, async () => _chatWithAgentInner(agentName, userMessage, profile, history));
+  return inner();
+}
+
+async function _chatWithAgentInner(
   agentName: string,
   userMessage: string,
   profile: AgentProfile,
@@ -990,38 +1002,37 @@ export const chatWithAgent = weave.op(async function chatWithAgent(
 ): Promise<ChatResult> {
   const client = getClient();
 
-  // Load Honcho identity context if available
+  // Load Honcho identity context + session history in parallel.
+  // These are independent calls -- running them concurrently saves ~500ms per chat.
   let honchoContext: string | undefined;
+  let sessionHistory: Array<{ role: string; content: string }> = [];
+  let sessionSummary: string | null = null;
+
   if (honchoEnabled()) {
-    try {
-      const ctx = await loadAgentContext(agentName);
-      const formatted = formatContextForPrompt(ctx);
+    const [ctxResult, sessionResult] = await Promise.allSettled([
+      loadAgentContext(agentName),
+      loadSessionMessages(agentName),
+    ]);
+
+    if (ctxResult.status === "fulfilled") {
+      const formatted = formatContextForPrompt(ctxResult.value);
       if (formatted.trim()) {
         honchoContext = formatted;
       }
-    } catch {
-      // Honcho context is supplementary -- never block chat
+    }
+
+    if (sessionResult.status === "fulfilled") {
+      sessionHistory = sessionResult.value.messages;
+      sessionSummary = sessionResult.value.summary;
+      if (sessionHistory.length > 0) {
+        console.log(`[mistral] Loaded ${sessionHistory.length} messages from Honcho session for ${agentName}`);
+      }
+    } else {
+      console.warn(`[mistral] Failed to load Honcho session for ${agentName}:`, sessionResult.reason);
     }
   }
 
   const systemPrompt = buildAgentSystemPrompt(profile, honchoContext);
-
-  // Load persistent session history from Honcho.
-  // This provides continuity across page refreshes / sessions.
-  let sessionHistory: Array<{ role: string; content: string }> = [];
-  let sessionSummary: string | null = null;
-  if (honchoEnabled()) {
-    try {
-      const session = await loadSessionMessages(agentName);
-      sessionHistory = session.messages;
-      sessionSummary = session.summary;
-      if (sessionHistory.length > 0) {
-        console.log(`[mistral] Loaded ${sessionHistory.length} messages from Honcho session for ${agentName}`);
-      }
-    } catch (err) {
-      console.warn(`[mistral] Failed to load Honcho session for ${agentName}:`, err);
-    }
-  }
 
   // Merge histories: Honcho session (older) + client-sent (recent, may not be in Honcho yet).
   // Client history takes priority for the most recent exchanges.
@@ -1140,16 +1151,12 @@ export const chatWithAgent = weave.op(async function chatWithAgent(
         let toolResult: { success: boolean; data: any; error?: string };
         const start = performance.now();
 
-        // Wrap tool execution in a traced Weave op for child spans
-        const tracedToolExec = weave.op(async function toolExecution(input: { tool: string; args: Record<string, any> }) {
-          if (!handler) {
-            return { success: false, data: null, error: `Unknown tool: ${input.tool}` };
-          }
-          return handler(input.args);
-        }, { name: `tool:${fnName}`, opKind: "tool" });
-
         try {
-          toolResult = await tracedToolExec({ tool: fnName, args: fnArgs });
+          if (!handler) {
+            toolResult = { success: false, data: null, error: `Unknown tool: ${fnName}` };
+          } else {
+            toolResult = await handler(fnArgs);
+          }
         } catch (e) {
           toolResult = { success: false, data: null, error: e instanceof Error ? e.message : String(e) };
         }
@@ -1184,7 +1191,7 @@ export const chatWithAgent = weave.op(async function chatWithAgent(
 
     // Record exchange in Honcho (fire-and-forget -- don't block response)
     if (honchoEnabled() && content) {
-      recordExchange(agentName, userMessage, content).catch(() => {});
+      recordExchange(agentName, userMessage, content, executedCalls.length > 0 ? executedCalls : undefined).catch(() => {});
     }
 
     return {
@@ -1204,18 +1211,7 @@ export const chatWithAgent = weave.op(async function chatWithAgent(
     outputTokens: totalOutputTokens,
     ...(executedCalls.length > 0 ? { toolCalls: executedCalls } : {}),
   };
-}, {
-  name: "chatWithAgent",
-  opKind: "agent",
-  summarize: (result: ChatResult) => ({
-    agent: "chatWithAgent",
-    toolCallCount: result.toolCalls?.length ?? 0,
-    toolNames: result.toolCalls?.map((tc) => tc.name) ?? [],
-    totalToolDurationMs: result.toolCalls?.reduce((sum, tc) => sum + tc.durationMs, 0) ?? 0,
-    inputTokens: result.inputTokens,
-    outputTokens: result.outputTokens,
-  }),
-});
+}
 
 /**
  * Generate a multi-agent standup conversation.
@@ -1310,10 +1306,13 @@ export const generateGroupChat = traced(async function generateGroupChat(
   eriMessage?: string,
   rounds = 1,
   history: {agent: string, message: string}[] = [],
+  existingSessionId?: string,
 ): Promise<GroupChatResult> {
   const client = getClient();
   const participantNames = profiles.map((p) => p.name);
-  const session = sessionKey(participantNames);
+  // If client provides an existing session ID, continue that session.
+  // Otherwise derive a new one from the current participants.
+  const session = existingSessionId || sessionKey(participantNames);
   const lines: StandupLine[] = [];
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
@@ -1334,7 +1333,7 @@ export const generateGroupChat = traced(async function generateGroupChat(
   // Record eri's message in Honcho if present
   if (honchoEnabled() && eriMessage) {
     try {
-      await recordGroupMessage(participantNames, "eri", eriMessage);
+      await recordGroupMessage(participantNames, "eri", eriMessage, session);
     } catch (e) {
       console.error("[honcho] Failed to record eri message", e);
     }
@@ -1400,35 +1399,102 @@ export const generateGroupChat = traced(async function generateGroupChat(
       }
 
       try {
-        console.log(`[mistral] Generating message for ${agent.name}...`);
-        const result = await client.chat.complete({
-          model: getAgentModel(agent.name),
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userPrompt },
-          ],
-          maxTokens: 200,
-          temperature: agent.type === "creative" ? 0.95
-            : agent.type === "embodied" ? 0.9
-            : agent.type === "production" ? 0.75
-            : 0.7, // infrastructure
+        console.log(`[mistral] Generating campfire message for ${agent.name}...`);
+        const tools = getToolsForAgent(agent.name);
+        const groupMessages: any[] = [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ];
+        const agentTemp = agent.type === "creative" ? 0.95
+          : agent.type === "embodied" ? 0.9
+          : agent.type === "production" ? 0.75
+          : 0.7;
+
+        // Allow up to 2 tool-call iterations so agents can actually use tools in campfire
+        const MAX_GROUP_TOOL_ITER = 2;
+        let finalContent = `${agent.name} has nothing to say.`;
+        const agentToolCalls: ExecutedToolCall[] = [];
+
+        for (let iter = 0; iter < MAX_GROUP_TOOL_ITER; iter++) {
+          const isLastIter = iter === MAX_GROUP_TOOL_ITER - 1;
+          const chatParams: any = {
+            model: getAgentModel(agent.name),
+            messages: groupMessages,
+            maxTokens: 200,
+            temperature: agentTemp,
+          };
+
+          if (!isLastIter && tools.length > 0) {
+            chatParams.tools = tools;
+            chatParams.toolChoice = "auto";
+          }
+
+          const result = await client.chat.complete(chatParams);
+          totalInputTokens += result.usage?.promptTokens ?? 0;
+          totalOutputTokens += result.usage?.completionTokens ?? 0;
+
+          const choice = result.choices?.[0];
+          if (!choice) break;
+
+          if (choice.finishReason === "tool_calls" && choice.message?.toolCalls?.length) {
+            groupMessages.push({
+              role: "assistant",
+              content: choice.message.content ?? "",
+              toolCalls: choice.message.toolCalls,
+            });
+
+            for (const tc of choice.message.toolCalls) {
+              if (tc.type && tc.type !== "function") continue;
+              const fnName = tc.function.name;
+              const fnArgs = typeof tc.function.arguments === "string"
+                ? JSON.parse(tc.function.arguments)
+                : tc.function.arguments ?? {};
+              const handler = TOOL_HANDLERS[fnName];
+              let toolResult: { success: boolean; data: any; error?: string };
+              const start = performance.now();
+              try {
+                toolResult = handler
+                  ? await handler(fnArgs)
+                  : { success: false, data: null, error: `Unknown tool: ${fnName}` };
+              } catch (e) {
+                toolResult = { success: false, data: null, error: e instanceof Error ? e.message : String(e) };
+              }
+              const durationMs = Math.round(performance.now() - start);
+              console.log(`[mistral] campfire tool: ${agent.name} -> ${fnName} (${toolResult.success ? "ok" : "err"}, ${durationMs}ms)`);
+              agentToolCalls.push({
+                id: tc.id ?? `campfire_${iter}_${fnName}`,
+                name: fnName,
+                args: fnArgs,
+                result: toolResult,
+                durationMs,
+              });
+              groupMessages.push({
+                role: "tool",
+                toolCallId: tc.id,
+                name: fnName,
+                content: JSON.stringify(toolResult),
+              });
+            }
+            continue;
+          }
+
+          // Text response -- done
+          finalContent = typeof choice.message?.content === "string"
+            ? choice.message.content.trim()
+            : finalContent;
+          break;
+        }
+
+        lines.push({
+          agent: agent.name,
+          message: finalContent,
+          ...(agentToolCalls.length > 0 ? { toolCalls: agentToolCalls } : {}),
         });
-
-        const choice = result.choices?.[0];
-        const content = typeof choice?.message?.content === "string"
-          ? choice.message.content.trim()
-          : `${agent.name} has nothing to say.`;
-
-        lines.push({ agent: agent.name, message: content });
-        totalInputTokens += result.usage?.promptTokens ?? 0;
-        totalOutputTokens += result.usage?.completionTokens ?? 0;
-
-        // (context for next agent is built from `lines` array above)
 
         // Record in Honcho group session
         if (honchoEnabled()) {
           try {
-            await recordGroupMessage(participantNames, agent.name, content);
+            await recordGroupMessage(participantNames, agent.name, finalContent, session);
           } catch (e) {
             console.error("[honcho] Failed to record group message", e);
           }
@@ -1440,7 +1506,6 @@ export const generateGroupChat = traced(async function generateGroupChat(
           agent: "system",
           message: `could not reach agent ${agent.name}: ${errorMessage}`,
         });
-        // (unavailability visible to next agent via `lines` array)
       }
     }
   }

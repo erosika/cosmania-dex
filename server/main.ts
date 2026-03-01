@@ -543,6 +543,7 @@ Bun.serve({
           message?: string;
           rounds?: number;
           history?: {agent: string, message: string}[];
+          sessionId?: string;
         };
 
         if (!body.agents || !Array.isArray(body.agents) || body.agents.length < 2) {
@@ -580,7 +581,8 @@ Bun.serve({
           profiles,
           body.message,
           body.rounds ?? 1,
-          body.history ?? []
+          body.history ?? [],
+          body.sessionId,
         );
 
         return Response.json(result, {

@@ -1,5 +1,11 @@
 /* COSMANIA DEX -- Dark-first, pixel-perfect */
 
+@font-face {
+  font-family: "Departure Mono";
+  src: local("Departure Mono"), local("DepartureMono");
+  font-display: swap;
+}
+
 :root {
   --bg: #0a0a0f;
   --bg-surface: #12121a;
@@ -48,8 +54,8 @@
     0 6px 14px rgba(0, 0, 0, 0.22),
     inset 0 1px 0 rgba(255, 255, 255, 0.08);
 
-  --font-mono: 'JetBrains Mono', 'Departure Mono', ui-monospace, 'SF Mono', monospace;
-  --font-serif: 'Space Mono', 'New York', ui-serif, Georgia, serif;
+  --font-mono: 'Departure Mono', ui-monospace, 'SF Mono', monospace;
+  --font-serif: 'Departure Mono', ui-monospace, 'SF Mono', monospace;
 }
 
 :root[data-theme="light"],
@@ -105,6 +111,7 @@ body.theme-light {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
+  font-family: var(--font-mono);
 }
 
 html, body {
@@ -330,6 +337,13 @@ canvas {
   white-space: nowrap;
 }
 
+.event-log-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+#event-log-tools-toggle,
 #event-log-toggle {
   border: none;
   background: none;
@@ -343,12 +357,22 @@ canvas {
   line-height: 1;
 }
 
+#event-log-tools-toggle {
+  width: 14px;
+  text-align: center;
+}
+
+#event-log-tools-toggle[aria-pressed="true"] {
+  color: var(--kyogre-panel-accent);
+}
+
+#event-log-tools-toggle:hover,
 #event-log-toggle:hover {
   color: var(--kyogre-panel-accent);
 }
 
 #event-log-controls {
-  display: grid;
+  display: none;
   grid-template-columns: 1fr auto auto;
   grid-template-areas:
     "search search search"
@@ -358,6 +382,10 @@ canvas {
   background: color-mix(in srgb, var(--kyogre-ui-shell) 84%, transparent);
   box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--kyogre-panel-border) 52%, transparent);
   flex-shrink: 0;
+}
+
+#event-log-panel.tools-open #event-log-controls {
+  display: grid;
 }
 
 #event-log-search {
@@ -451,6 +479,10 @@ canvas {
   display: none;
 }
 
+#event-log-panel.collapsed #event-log-tools-toggle {
+  display: none;
+}
+
 #event-log-panel.collapsed .event-log-header {
   flex: 1;
   min-height: 160px;
@@ -465,6 +497,10 @@ canvas {
   transform: rotate(180deg);
   font-size: 8px;
   letter-spacing: 0.16em;
+}
+
+#event-log-panel.collapsed .event-log-header-actions {
+  flex-direction: column;
 }
 
 #event-log-panel.collapsed #event-log-toggle {
@@ -484,6 +520,14 @@ canvas {
   background: none;
 }
 
+.event-log-entry[data-clickable="true"] {
+  cursor: pointer;
+}
+
+.event-log-entry[data-clickable="false"] {
+  cursor: default;
+}
+
 .event-log-time {
   font-family: var(--font-mono);
   font-size: 10px;
@@ -493,12 +537,25 @@ canvas {
   text-shadow: 0 1px 0 rgba(0, 0, 0, 0.58);
 }
 
+.event-log-agent {
+  display: inline;
+  margin-right: 7px;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--kyogre-panel-muted) 88%, white);
+}
+
 .event-log-text {
   font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.5;
   color: color-mix(in srgb, var(--kyogre-panel-text) 95%, white);
   text-shadow: 0 1px 0 rgba(0, 0, 0, 0.5);
+}
+
+.event-log-entry[data-clickable="true"]:hover .event-log-text {
+  color: var(--kyogre-panel-accent);
 }
 
 .event-log-entry[data-kind="state"] .event-log-text {
@@ -561,7 +618,7 @@ canvas {
 
 .agent-menu-header {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 10px;
 }
@@ -580,36 +637,99 @@ canvas {
   text-transform: uppercase;
 }
 
-.agent-menu-body {
-  margin-top: 6px;
-  margin-bottom: 8px;
+.agent-menu-close {
+  margin-left: auto;
+  width: 16px;
+  height: 16px;
+  border: none;
+  background: transparent;
   color: var(--fg-muted);
-  font-family: var(--font-serif);
-  font-size: 11px;
-  line-height: 1.35;
+  font-family: var(--font-mono);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  opacity: 0.8;
 }
 
-.agent-menu-actions {
-  display: flex;
-  gap: 6px;
+.agent-menu-close:hover {
+  color: var(--accent);
+  opacity: 1;
 }
 
-.agent-menu-actions button {
-  flex: 1;
+.agent-menu-profile-card {
+  margin-top: 4px;
+  width: 100%;
+  border: none;
   background: none;
-  border: 1px solid var(--fg-muted);
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+
+.agent-menu-body {
+  display: block;
   color: var(--fg);
   font-family: var(--font-mono);
-  font-size: 9px;
-  letter-spacing: 0.1em;
+  font-size: 11px;
+  line-height: 1.35;
+  border: none;
+  background: none;
+  padding: 0;
+}
+
+.agent-menu-profile-card:hover .agent-menu-body {
+  color: var(--accent);
+}
+
+.agent-menu-profile-card:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 72%, transparent);
+  outline-offset: 2px;
+}
+
+.agent-menu-model {
+  margin-top: 6px;
+  width: 100%;
+  border: none;
+  background: none;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
-  padding: 3px 8px;
   cursor: pointer;
 }
 
-.agent-menu-actions button:hover {
-  border-color: var(--accent);
+.agent-menu-model:hover {
   color: var(--accent);
+}
+
+.agent-menu-model:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 72%, transparent);
+  outline-offset: 2px;
+}
+
+.agent-menu-model-icon {
+  width: 14px;
+  height: 14px;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  flex-shrink: 0;
+}
+
+.agent-menu-model-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ---- Agent Mini Profile Window ---- */
@@ -1072,13 +1192,18 @@ button.agent-profile-window-dot.close:hover {
   padding: 6px;
 }
 
+#agent-menu .agent-menu-close {
+  border: none;
+  background: transparent;
+  box-shadow: none;
+}
+
 #agent-profile-window .agent-profile-window-dot {
   border-radius: 0;
   width: 8px;
   height: 8px;
 }
 
-.agent-menu-actions button,
 .agent-profile-window-actions button,
 #profile-panel.menu-mode #chat-send,
 #profile-panel.menu-mode #photo-upload-btn,
@@ -1097,7 +1222,6 @@ button.agent-profile-window-dot.close:hover {
     2px 2px 0 rgba(0, 0, 0, 0.45);
 }
 
-.agent-menu-actions button:hover,
 .agent-profile-window-actions button:hover,
 #profile-panel.menu-mode #chat-send:hover,
 #profile-panel.menu-mode #photo-upload-btn:hover,
@@ -1109,7 +1233,6 @@ button.agent-profile-window-dot.close:hover {
   border-color: var(--accent);
 }
 
-.agent-menu-actions button:active,
 .agent-profile-window-actions button:active,
 #profile-panel.menu-mode #chat-send:active,
 #profile-panel.menu-mode #photo-upload-btn:active,
@@ -1182,7 +1305,7 @@ button.agent-profile-window-dot.close:hover {
 }
 
 #profile-info h1 {
-  font-family: 'Space Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 28px;
   font-weight: 700;
   letter-spacing: -0.5px;
@@ -1196,6 +1319,19 @@ button.agent-profile-window-dot.close:hover {
   font-family: var(--font-mono);
   font-size: 13px;
   color: var(--fg-muted);
+}
+
+#profile-status-info {
+  margin-top: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.35;
+  letter-spacing: 0.02em;
+  color: color-mix(in srgb, var(--fg-muted) 90%, var(--fg));
+}
+
+#profile-status-info[hidden] {
+  display: none;
 }
 
 #profile-stats {
@@ -1489,6 +1625,58 @@ button.agent-profile-window-dot.close:hover {
 .chat-msg.agent[data-type="production"] { border-left-color: var(--type-production); }
 .chat-msg.agent[data-type="embodied"] { border-left-color: var(--type-embodied); }
 
+.chat-msg.has-traces {
+  cursor: pointer;
+  position: relative;
+}
+.chat-msg.has-traces:hover {
+  background: color-mix(in srgb, var(--bg-surface) 85%, var(--accent));
+}
+.chat-msg.active-trace {
+  background: color-mix(in srgb, var(--bg-surface) 80%, var(--accent));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.chat-msg-tc-badge {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  padding: 1px 6px;
+  margin-left: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  vertical-align: middle;
+}
+
+.trace-filter-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid var(--border);
+}
+.trace-show-all {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--accent);
+  background: none;
+  border: 1px solid var(--accent);
+  padding: 1px 8px;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.trace-show-all:hover {
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+}
+
 .chat-msg.thinking {
   font-family: var(--font-mono);
   font-size: 11px;
@@ -1738,7 +1926,7 @@ button.agent-profile-window-dot.close:hover {
 }
 
 .campfire-title {
-  font-family: 'Space Mono', monospace;
+  font-family: var(--font-mono);
   font-size: 16px;
   font-weight: 700;
   letter-spacing: -0.5px;
@@ -1770,6 +1958,12 @@ button.agent-profile-window-dot.close:hover {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
+}
+
+.campfire-select-empty {
+  font-size: 10px;
+  color: var(--fg-muted);
+  padding: 6px 0;
 }
 
 .campfire-agent-btn {
@@ -2080,6 +2274,198 @@ button.agent-profile-window-dot.close:hover {
   color: var(--red);
 }
 
+/* ---- Settings Menu ---- */
+
+#settings-menu {
+  position: fixed;
+  top: 42px;
+  right: 42px;
+  z-index: 24;
+  opacity: 0.15;
+  transition: opacity 0.16s ease;
+}
+
+#settings-menu:hover,
+#settings-menu:focus-within,
+#settings-menu.open {
+  opacity: 1;
+}
+
+#settings-menu-toggle {
+  width: 22px;
+  height: 22px;
+  border: 2px solid var(--pixel-border-hi);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(0, 0, 0, 0.2)),
+    color-mix(in srgb, var(--bg-surface) 86%, black);
+  color: var(--fg-muted);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  box-shadow:
+    inset 1px 1px 0 rgba(255, 255, 255, 0.2),
+    inset -1px -1px 0 rgba(0, 0, 0, 0.55),
+    2px 2px 0 rgba(0, 0, 0, 0.5);
+}
+
+#settings-menu-toggle:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+#settings-menu-panel {
+  position: absolute;
+  top: 28px;
+  right: 0;
+  width: min(264px, calc(100vw - 24px));
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(0, 0, 0, 0.14)),
+    repeating-linear-gradient(
+      45deg,
+      var(--pixel-dither-a) 0 2px,
+      var(--pixel-dither-b) 2px 4px
+    ),
+    color-mix(in srgb, var(--bg) 96%, black);
+  border: 2px solid var(--pixel-border-hi);
+  outline: 2px solid var(--pixel-border-lo);
+  outline-offset: -2px;
+  box-shadow:
+    2px 0 0 var(--pixel-shadow),
+    0 2px 0 var(--pixel-shadow),
+    4px 4px 0 var(--pixel-shadow);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+#settings-menu-panel[hidden] {
+  display: none;
+}
+
+.settings-menu-title {
+  font-size: 9px;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.settings-section-label {
+  font-size: 9px;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+}
+
+#settings-campfire-name {
+  width: 100%;
+  border: 2px solid var(--pixel-border-lo);
+  background:
+    repeating-linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0.02) 0 2px,
+      rgba(0, 0, 0, 0.1) 2px 4px
+    ),
+    color-mix(in srgb, var(--bg-surface) 88%, black);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.25;
+  padding: 5px 7px;
+  outline: none;
+}
+
+#settings-campfire-name:focus {
+  border-color: var(--accent);
+}
+
+#settings-agent-list {
+  max-height: min(240px, 34vh);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-right: 2px;
+}
+
+.settings-agent-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--pixel-border-lo);
+  background: color-mix(in srgb, var(--bg-surface) 90%, black);
+  padding: 4px 6px;
+  cursor: pointer;
+}
+
+.settings-agent-row input {
+  margin: 0;
+  width: 12px;
+  height: 12px;
+  accent-color: var(--accent);
+}
+
+.settings-agent-name {
+  font-size: 11px;
+  color: var(--fg);
+}
+
+.settings-agent-type {
+  font-size: 8px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+.settings-agent-type[data-type="infrastructure"] { color: var(--type-infrastructure); }
+.settings-agent-type[data-type="creative"] { color: var(--type-creative); }
+.settings-agent-type[data-type="production"] { color: var(--type-production); }
+.settings-agent-type[data-type="embodied"] { color: var(--type-embodied); }
+
+.settings-agent-empty {
+  font-size: 10px;
+  color: var(--fg-muted);
+  padding: 4px 2px;
+}
+
+.settings-menu-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.settings-menu-actions button {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(0, 0, 0, 0.2)),
+    color-mix(in srgb, var(--bg-surface) 86%, black);
+  border: 2px solid var(--pixel-border-hi);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  cursor: pointer;
+  box-shadow:
+    inset 1px 1px 0 rgba(255, 255, 255, 0.2),
+    inset -1px -1px 0 rgba(0, 0, 0, 0.55),
+    2px 2px 0 rgba(0, 0, 0, 0.45);
+}
+
+.settings-menu-actions button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 /* ---- Model Picker ---- */
 
 #model-picker {
@@ -2320,17 +2706,12 @@ button.agent-profile-window-dot.close:hover {
     inset -1px -1px 0 rgba(0, 0, 0, 0.6);
 }
 
-#model-picker-select:hover {
+#model-picker-save:hover {
   border-color: var(--green);
   color: var(--green);
 }
 
-#model-picker-reset:hover {
-  border-color: var(--orange);
-  color: var(--orange);
-}
-
-#model-picker-close:hover {
+#model-picker-cancel:hover {
   border-color: var(--red);
   color: var(--red);
 }
@@ -2424,6 +2805,13 @@ button.agent-profile-window-dot.close:hover {
   color: var(--kyogre-panel-muted);
 }
 
+#profile-panel.visible #profile-status-info {
+  margin-top: 4px;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: color-mix(in srgb, var(--kyogre-panel-muted) 88%, var(--kyogre-panel-text));
+}
+
 #profile-panel.visible #profile-type-badge {
   border: 1px solid var(--kyogre-panel-border);
   background: color-mix(in srgb, var(--kyogre-panel-surface) 92%, white);
@@ -2474,6 +2862,10 @@ button.agent-profile-window-dot.close:hover {
   font-size: 12px;
   line-height: 1.5;
   padding: 8px 12px;
+}
+
+#profile-panel.visible:not(.menu-mode) #profile-bubble {
+  display: none;
 }
 
 #profile-panel.visible #profile-workspace {
@@ -2801,6 +3193,7 @@ button.agent-profile-window-dot.close:hover {
 #agent-menu,
 #agent-profile-window,
 #world-menu-panel,
+#settings-menu-panel,
 #model-picker,
 #campfire-panel {
   background: var(--kyogre-ui-shell);
@@ -2820,6 +3213,9 @@ button.agent-profile-window-dot.close:hover {
 .agent-menu-label,
 .agent-menu-name,
 .world-menu-title,
+.settings-menu-title,
+.settings-section-label,
+.settings-agent-type,
 .model-picker-agent,
 .campfire-select-label,
 .panel-label,
@@ -2838,6 +3234,8 @@ button.agent-profile-window-dot.close:hover {
 .campfire-msg .msg-body,
 .model-picker-card,
 #world-layout-json,
+#settings-campfire-name,
+.settings-agent-row,
 #chat-input,
 #campfire-input {
   background: var(--kyogre-ui-chip);
@@ -2846,7 +3244,29 @@ button.agent-profile-window-dot.close:hover {
   border-radius: 8px;
 }
 
-.agent-menu-actions button,
+#agent-menu .agent-menu-profile-card {
+  margin-top: 4px;
+}
+
+#agent-menu .agent-menu-body {
+  background: transparent;
+  border-radius: 0;
+  color: var(--kyogre-panel-text);
+}
+
+#agent-menu .agent-menu-model {
+  color: var(--kyogre-panel-muted);
+}
+
+#agent-menu .agent-menu-model:hover {
+  color: var(--kyogre-panel-accent);
+}
+
+#agent-menu .agent-menu-model-icon {
+  width: 13px;
+  height: 13px;
+}
+
 .agent-profile-window-actions button,
 #chat-send,
 #photo-upload-btn,
@@ -2856,6 +3276,8 @@ button.agent-profile-window-dot.close:hover {
 #campfire-actions button,
 .campfire-agent-btn,
 #world-menu-toggle,
+.settings-menu-actions button,
+#settings-menu-toggle,
 .world-menu-actions button,
 .model-picker-actions button,
 .model-picker-viewport button {
@@ -2867,7 +3289,24 @@ button.agent-profile-window-dot.close:hover {
   text-transform: uppercase;
 }
 
-.agent-menu-actions button:hover,
+#agent-menu .agent-menu-close {
+  width: 16px;
+  height: 16px;
+  min-width: 16px;
+  font-size: 14px;
+  margin-left: auto;
+  color: var(--kyogre-panel-muted);
+  background: transparent;
+  box-shadow: none;
+  opacity: 0.82;
+}
+
+#agent-menu .agent-menu-close:hover {
+  color: var(--kyogre-panel-accent);
+  background: transparent;
+  opacity: 1;
+}
+
 .agent-profile-window-actions button:hover,
 #chat-send:hover,
 #photo-upload-btn:hover,
@@ -2877,6 +3316,8 @@ button.agent-profile-window-dot.close:hover {
 #campfire-actions button:hover,
 .campfire-agent-btn:hover,
 #world-menu-toggle:hover,
+.settings-menu-actions button:hover,
+#settings-menu-toggle:hover,
 .world-menu-actions button:hover,
 .model-picker-actions button:hover,
 .model-picker-viewport button:hover {
@@ -2884,7 +3325,15 @@ button.agent-profile-window-dot.close:hover {
   background: color-mix(in srgb, var(--kyogre-ui-chip) 76%, var(--kyogre-panel-accent));
 }
 
-.agent-menu-actions button:active,
+#agent-menu .agent-menu-profile-card:hover .agent-menu-body {
+  color: var(--kyogre-panel-accent);
+  background: transparent;
+}
+
+#agent-menu .agent-menu-close:active {
+  transform: none;
+}
+
 .agent-profile-window-actions button:active,
 #chat-send:active,
 #photo-upload-btn:active,
@@ -2894,6 +3343,8 @@ button.agent-profile-window-dot.close:hover {
 #campfire-actions button:active,
 .campfire-agent-btn:active,
 #world-menu-toggle:active,
+.settings-menu-actions button:active,
+#settings-menu-toggle:active,
 .world-menu-actions button:active,
 .model-picker-actions button:active,
 .model-picker-viewport button:active {
@@ -2904,13 +3355,30 @@ button.agent-profile-window-dot.close:hover {
   opacity: 0.5;
 }
 
+#settings-menu {
+  opacity: 0.5;
+}
+
 #world-menu:hover,
 #world-menu:focus-within,
 #world-menu.open {
   opacity: 1;
 }
 
+#settings-menu:hover,
+#settings-menu:focus-within,
+#settings-menu.open {
+  opacity: 1;
+}
+
 #world-menu-toggle {
+  width: 24px;
+  height: 24px;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+}
+
+#settings-menu-toggle {
   width: 24px;
   height: 24px;
   font-size: 9px;
@@ -2924,6 +3392,13 @@ button.agent-profile-window-dot.close:hover {
   gap: 6px;
 }
 
+#settings-menu-panel {
+  width: min(280px, calc(100vw - 20px));
+  top: 30px;
+  padding: 8px;
+  gap: 6px;
+}
+
 #world-layout-json {
   min-height: 170px;
   max-height: 40vh;
@@ -2932,6 +3407,7 @@ button.agent-profile-window-dot.close:hover {
 }
 
 #world-layout-json:focus,
+#settings-campfire-name:focus,
 #chat-input:focus,
 #campfire-input:focus {
   outline: 2px solid color-mix(in srgb, var(--kyogre-panel-accent) 62%, transparent);
@@ -3120,7 +3596,8 @@ button.agent-profile-window-dot.close:hover {
     max-width: calc(100vw - 10px);
   }
 
-  #world-menu-panel {
+  #world-menu-panel,
+  #settings-menu-panel {
     width: calc(100vw - 16px);
   }
 

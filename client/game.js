@@ -54,10 +54,20 @@ const EVENT_LOG_REPAINT_MS = 280;
 const EVENT_LOG_SCROLL_TOP_STICKY_PX = 10;
 const EVENT_LOG_SEARCH_LIMIT = 260;
 const EVENT_LOG_SEARCH_DEBOUNCE_MS = 220;
+const CHAT_INPUT_DEFAULT_PLACEHOLDER = "talk to this agent...";
 const EVENT_UPLOAD_BATCH_MS = 1200;
 const EVENT_UPLOAD_MAX_BATCH = 36;
 const EVENT_UPLOAD_QUEUE_LIMIT = 1200;
 const EVENT_BOOTSTRAP_LOAD_LIMIT = 180;
+const MODEL_ICON_ORBIT_SPEED = 0.0022;
+const MODEL_ICON_FLOAT_AMPLITUDE = 2.8;
+const MOVE_TARGET_BLEND = 0.2;
+const MOVE_IDLE_DAMP = 0.82;
+const MOVE_FACING_DEADZONE = 0.003;
+const WALK_ARRIVE_RADIUS = 7;
+const WALK_SLOW_RADIUS = 28;
+const SETTINGS_STORAGE_KEY = "cosmania-dex:ui-settings:v1";
+const DEFAULT_CAMPFIRE_LABEL = "Campfire";
 
 
 const TYPE_COLORS = {
@@ -168,6 +178,7 @@ let gamepadPrevButtons = {};
 let chatHistory = {}; // per-agent: { agentName: [{role, content}] }
 let traceHistory = {}; // per-agent: { agentName: [{id, name, args, result, durationMs}] }
 let traceExpandedIds = {}; // per-agent: { agentName: Set<id> }
+let traceFilterIds = {}; // per-agent: { agentName: Set<id> | null } -- when set, only show these
 let chatSending = false;
 let pendingUpload = null; // { id, filename, path, size, contentHash, objectUrl }
 let voicePlaying = false;
@@ -175,6 +186,7 @@ let currentAudio = null;
 let campfireSelected = new Set(); // agent names selected for campfire
 let campfireMessages = []; // { agent, message, type }
 let campfireSending = false;
+let campfireSessionId = null; // Honcho session ID -- persists when peers change
 let lastTimestamp = 0;
 let pixelField = null;
 let worldInteractionPoints = [];
@@ -188,6 +200,8 @@ let agentProfileWindowDetails = null;
 let profilePanelMenuMode = false;
 let profilePanelMenuAnchor = null;
 let spriteLoadState = {}; // per-agent: "loading" | "loaded" | "error"
+let modelIconImages = {}; // per-icon-src Image
+let modelIconLoadState = {}; // per-icon-src: "loading" | "loaded" | "error"
 let tracePanelVisible = true;
 
 // Model picker state
@@ -195,7 +209,7 @@ let modelPickerOpen = false;
 let modelPickerIndex = 0;
 let modelPickerAgent = null;
 let modelPickerCurrentModel = null; // model ID currently active for the agent
-let agentModelInfo = {}; // per-agent model metadata for badges
+let agentModelInfo = {}; // per-agent model metadata for floating icon tags
 let agentModelFetchState = {}; // per-agent: "loading" | "loaded" | "error"
 let eventLogEntries = []; // [{ ts, time, message, kind }]
 let eventLogLastByKey = {}; // dedupe key -> timestamp
@@ -205,13 +219,19 @@ let eventLogLastMarkup = "";
 let eventLogSearchQuery = "";
 let eventLogSearchSemantic = true;
 let eventLogSearchKind = "all";
+let eventLogToolsOpen = false;
 let eventLogSearchResults = null; // null when no active query; [] when queried with no matches
 let eventLogSearchInFlight = false;
 let eventLogSearchDebounceTimer = null;
 let eventLogSearchSeq = 0;
+let eventLogRenderedEntries = []; // currently rendered, click-resolvable event rows
+let activeChatEventContext = null; // { agentName, time, kind, message, ts }
 let eventUploadQueue = []; // events pending persistence POST /api/events
 let eventUploadInFlight = false;
 let eventUploadLastSentAt = 0;
+let hiddenAgentNames = new Set(); // lower-case agent names hidden from UI
+let settingsMenuOpen = false;
+let campfireLabel = DEFAULT_CAMPFIRE_LABEL;
 
 const MODEL_REGISTRY = [
   // -- Generalist (tool use) --
@@ -262,14 +282,58 @@ function getModelBadgeLabel(modelId) {
   return token.slice(0, 7);
 }
 
+function getModelDisplayName(modelId) {
+  if (!modelId) return "model ...";
+  const fromRegistry = getModelRegistryEntry(modelId);
+  if (fromRegistry?.name) return fromRegistry.name;
+  return String(modelId)
+    .replace(/-latest$/i, "")
+    .replace(/^open-/i, "")
+    .replace(/-/g, " ");
+}
+
+function triggerHapticFeedback(pattern = 22) {
+  try {
+    if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
+      navigator.vibrate(pattern);
+    }
+  } catch {
+    // no-op when vibration is unavailable
+  }
+}
+
+function normalizeAssetPath(path) {
+  if (typeof path !== "string" || !path.trim()) return "";
+  const clean = path.trim().replace(/^\.?\//, "");
+  return `/${clean}`;
+}
+
+function getModelIconPath(modelId) {
+  const entry = getModelRegistryEntry(modelId);
+  if (!entry?.icon) return "";
+  return normalizeAssetPath(entry.icon);
+}
+
+function getModelIconImage(modelMeta) {
+  if (!modelMeta?.iconPath) return null;
+  const cached = modelIconImages[modelMeta.iconPath];
+  if (cached) return cached;
+  loadModelIconBySrc(modelMeta.iconPath);
+  return null;
+}
+
 function setAgentModelInfo(agentName, info) {
-  if (!agentName || !info || !info.model) {
-    agentModelInfo[agentName] = { modelId: "", label: "", isOverride: false };
+  if (!agentName) return;
+  if (!info || !info.model) {
+    agentModelInfo[agentName] = { modelId: "", label: "", iconPath: "", isOverride: false };
     return;
   }
+  const iconPath = getModelIconPath(info.model);
+  if (iconPath) loadModelIconBySrc(iconPath);
   agentModelInfo[agentName] = {
     modelId: info.model,
     label: getModelBadgeLabel(info.model),
+    iconPath,
     isOverride: Boolean(info.isOverride),
   };
 }
@@ -364,10 +428,41 @@ function eventRowsForRender(now) {
   return rows.slice(0, EVENT_LOG_RENDER_LIMIT);
 }
 
+function toDialogEventText(entry) {
+  const raw = typeof entry?.message === "string" ? entry.message.trim() : "";
+  if (!raw) return "...";
+
+  // Surface failures as concise report-dialog language.
+  if (/returned an error/i.test(raw)) {
+    return "report failed";
+  }
+  if (/unreachable/i.test(raw)) {
+    return "report failed: unreachable";
+  }
+  if (/campfire error:/i.test(raw)) {
+    return raw.replace(/campfire error:/i, "report failed:").trim();
+  }
+
+  const repliedMatch = raw.match(/^[^:]+ replied:\s*(.+)$/i);
+  if (repliedMatch?.[1]) return repliedMatch[1].trim();
+
+  const prefixedAgentMatch = raw.match(/^([a-z0-9_-]+):\s+(.+)$/i);
+  if (
+    prefixedAgentMatch &&
+    entry?.agentName &&
+    prefixedAgentMatch[1].toLowerCase() === String(entry.agentName).toLowerCase()
+  ) {
+    return prefixedAgentMatch[2].trim();
+  }
+
+  return raw;
+}
+
 function renderEventLog() {
   const panel = document.getElementById("event-log-panel");
   const container = document.getElementById("event-log-entries");
   const toggleBtn = document.getElementById("event-log-toggle");
+  const toolsToggleBtn = document.getElementById("event-log-tools-toggle");
   const searchInput = document.getElementById("event-log-search");
   const kindSelect = document.getElementById("event-log-kind");
   const semanticBtn = document.getElementById("event-log-semantic");
@@ -375,9 +470,14 @@ function renderEventLog() {
 
   const shouldShow = shouldShowEventLog();
   panel.hidden = !shouldShow;
-  if (!shouldShow) return;
+  if (!shouldShow) {
+    eventLogRenderedEntries = [];
+    return;
+  }
 
   panel.classList.toggle("collapsed", eventLogCollapsed);
+  const toolsVisible = eventLogToolsOpen || isEventSearchMode();
+  panel.classList.toggle("tools-open", toolsVisible);
   panel.setAttribute("data-mode", isEventSearchMode() ? "search" : "live");
   panel.setAttribute("data-semantic", eventLogSearchSemantic ? "on" : "off");
 
@@ -390,6 +490,9 @@ function renderEventLog() {
   if (semanticBtn) {
     semanticBtn.setAttribute("aria-pressed", eventLogSearchSemantic ? "true" : "false");
   }
+  if (toolsToggleBtn) {
+    toolsToggleBtn.setAttribute("aria-pressed", toolsVisible ? "true" : "false");
+  }
 
   if (toggleBtn) {
     toggleBtn.textContent = eventLogCollapsed ? ">" : "<";
@@ -397,13 +500,17 @@ function renderEventLog() {
     toggleBtn.setAttribute("aria-label", eventLogCollapsed ? "Expand event log" : "Collapse event log");
   }
 
-  if (eventLogCollapsed) return;
+  if (eventLogCollapsed) {
+    eventLogRenderedEntries = [];
+    return;
+  }
 
   const now = Date.now();
   const searchMode = isEventSearchMode();
   const visibleEntries = eventRowsForRender(now);
 
   if (!visibleEntries.length) {
+    eventLogRenderedEntries = [];
     if (searchMode && eventLogSearchInFlight) {
       const searchingMarkup = '<div class="event-log-empty">searching semantic matches...</div>';
       if (searchingMarkup !== eventLogLastMarkup) {
@@ -424,20 +531,24 @@ function renderEventLog() {
     return;
   }
 
+  eventLogRenderedEntries = visibleEntries.slice();
   const previousScrollTop = container.scrollTop;
   const previousScrollHeight = container.scrollHeight;
   const stickToTop = previousScrollTop <= EVENT_LOG_SCROLL_TOP_STICKY_PX;
   const markup = visibleEntries
-    .map((entry) => {
+    .map((entry, index) => {
       const age = now - entry.ts;
       const fadeProgress = searchMode || age <= EVENT_LOG_FADE_START_MS
         ? 0
         : Math.min(1, (age - EVENT_LOG_FADE_START_MS) / (EVENT_LOG_MAX_AGE_MS - EVENT_LOG_FADE_START_MS));
       const alpha = Math.max(0.08, 1 - fadeProgress);
+      const dialogText = toDialogEventText(entry);
+      const targetAgentName = resolveEventAgentName(entry);
+      const clickable = Boolean(targetAgentName);
       const agentLabel = entry.agentName
         ? `<span class="event-log-agent">${escapeHtml(entry.agentName)}</span>`
         : "";
-      return `<div class="event-log-entry" data-kind="${escapeHtml(entry.kind)}" style="opacity:${alpha.toFixed(3)}"><span class="event-log-time">${entry.time}</span><span class="event-log-text">${agentLabel}${escapeHtml(entry.message)}</span></div>`;
+      return `<div class="event-log-entry" data-event-index="${index}" data-kind="${escapeHtml(entry.kind)}" data-clickable="${clickable ? "true" : "false"}" style="opacity:${alpha.toFixed(3)}"><span class="event-log-time">${entry.time}</span><span class="event-log-text">${agentLabel}${escapeHtml(dialogText)}</span></div>`;
     })
     .join("");
 
@@ -466,6 +577,13 @@ function setEventLogCollapsed(collapsed) {
   if (eventLogCollapsed === next) return;
   eventLogCollapsed = next;
   eventLogLastMarkup = "";
+  renderEventLog();
+}
+
+function setEventLogToolsOpen(open) {
+  const next = Boolean(open);
+  if (eventLogToolsOpen === next) return;
+  eventLogToolsOpen = next;
   renderEventLog();
 }
 
@@ -555,6 +673,24 @@ function clearEventSearch() {
   if (searchInput) searchInput.value = "";
   eventLogLastMarkup = "";
   renderEventLog();
+}
+
+function handleEventLogClick(event) {
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+  const row = target.closest(".event-log-entry");
+  if (!(row instanceof HTMLElement)) return;
+
+  const clickable = row.getAttribute("data-clickable");
+  if (clickable !== "true") return;
+
+  const indexRaw = row.getAttribute("data-event-index");
+  const entryIndex = Number.parseInt(indexRaw ?? "-1", 10);
+  if (!Number.isFinite(entryIndex) || entryIndex < 0 || entryIndex >= eventLogRenderedEntries.length) return;
+
+  const entry = eventLogRenderedEntries[entryIndex];
+  if (!entry) return;
+  startConversationFromEvent(entry);
 }
 
 function enqueueEventForPersistence(payload) {
@@ -803,9 +939,23 @@ async function fetchRoster() {
           newAgent.facing = old.facing;
           newAgent.action = old.action;
           newAgent.actionTimer = old.actionTimer;
+          newAgent.moveSpeed = old.moveSpeed;
+          newAgent._facingLockMs = old._facingLockMs;
+          if (old.targetAgent?.name) {
+            newAgent._targetAgentName = old.targetAgent.name;
+          }
         }
       }
       agents = data;
+      const agentByName = new Map(agents.map((agent) => [agent.name, agent]));
+      for (const rosterAgent of agents) {
+        if (rosterAgent._targetAgentName) {
+          rosterAgent.targetAgent = agentByName.get(rosterAgent._targetAgentName) || null;
+          delete rosterAgent._targetAgentName;
+        } else if (!rosterAgent.targetAgent) {
+          rosterAgent.targetAgent = null;
+        }
+      }
       placeholderSprites = {};
       primeRosterSprites();
       for (const rosterAgent of agents) {
@@ -813,12 +963,20 @@ async function fetchRoster() {
           fetchAgentModelInfo(rosterAgent.name);
         }
       }
+      reconcileSelectedAgentVisibility();
+      renderSettingsAgentToggles();
+      if (view === "campfire") {
+        refreshCampfireAgentButtons();
+        updateCampfireSession();
+      }
     }
   } catch (e) {
     console.warn("[dex] Failed to fetch roster:", e.message);
     if (agents.length === 0) {
       agents = generateFallbackRoster();
       primeRosterSprites();
+      reconcileSelectedAgentVisibility();
+      renderSettingsAgentToggles();
     }
   }
 }
@@ -876,6 +1034,31 @@ function loadSpriteForAgent(name) {
     spriteLoadState[name] = "error";
   };
   image.src = `/sprites/${encodeURIComponent(name)}.svg`;
+}
+
+function loadModelIconBySrc(src) {
+  if (!src) return;
+  if (modelIconImages[src]) return;
+  const status = modelIconLoadState[src];
+  if (status === "loading" || status === "loaded" || status === "error") return;
+
+  modelIconLoadState[src] = "loading";
+  const image = new Image();
+  image.onload = () => {
+    modelIconImages[src] = image;
+    modelIconLoadState[src] = "loaded";
+  };
+  image.onerror = () => {
+    modelIconLoadState[src] = "error";
+  };
+  image.src = src;
+}
+
+function primeModelIcons() {
+  for (const entry of MODEL_REGISTRY) {
+    const iconPath = normalizeAssetPath(entry.icon);
+    if (iconPath) loadModelIconBySrc(iconPath);
+  }
 }
 
 function primeRosterSprites() {
@@ -1249,9 +1432,308 @@ function exposeWorldControls() {
   window.toggleDexWorldMenu = toggleWorldMenu;
 }
 
+function normalizeCampfireLabel(value) {
+  if (typeof value !== "string") return DEFAULT_CAMPFIRE_LABEL;
+  const cleaned = value.replace(/\s+/g, " ").trim();
+  return cleaned || DEFAULT_CAMPFIRE_LABEL;
+}
+
+function getCampfireSessionToken() {
+  const token = normalizeCampfireLabel(campfireLabel)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return token || "campfire";
+}
+
+function isAgentVisibleName(name) {
+  if (!name) return true;
+  return !hiddenAgentNames.has(String(name).trim().toLowerCase());
+}
+
+function getVisibleAgents() {
+  return agents.filter((agent) => isAgentVisibleName(agent.name));
+}
+
+function pruneCampfireSelectionToVisible() {
+  if (!campfireSelected || campfireSelected.size === 0) return false;
+  const visibleNames = new Set(getVisibleAgents().map((agent) => agent.name));
+  const next = new Set();
+  for (const name of campfireSelected) {
+    if (visibleNames.has(name)) next.add(name);
+  }
+  const changed = next.size !== campfireSelected.size;
+  campfireSelected = next;
+  return changed;
+}
+
+function reconcileSelectedAgentVisibility() {
+  pruneCampfireSelectionToVisible();
+  const sortedVisible = getDepthSortedAgents();
+  if (sortedVisible.length === 0) {
+    selectedIndex = 0;
+    bubbleIndex = 0;
+  } else {
+    const hasSelected = sortedVisible.some((entry) => entry.originalIndex === selectedIndex);
+    if (!hasSelected) {
+      selectedIndex = sortedVisible[0].originalIndex;
+    }
+    if (bubbleIndex < 0 || bubbleIndex >= sortedVisible.length) {
+      bubbleIndex = 0;
+    }
+  }
+
+  if (agentMenuOpen && agentMenuAgentName && !isAgentVisibleName(agentMenuAgentName)) {
+    closeAgentMenu();
+  }
+  if (agentProfileWindowOpen && agentProfileWindowAgentName && !isAgentVisibleName(agentProfileWindowAgentName)) {
+    closeAgentProfileWindow();
+  }
+  if (profileAgent?.name && !isAgentVisibleName(profileAgent.name)) {
+    hideProfile();
+  }
+  if (activeBubbleAgentName && !isAgentVisibleName(activeBubbleAgentName)) {
+    activeBubbleAgentName = "";
+    activeBubbleText = "";
+  }
+}
+
+const TRACE_STORAGE_KEY = "cosmania-dex-traces";
+
+function saveTraceHistory() {
+  try {
+    if (typeof localStorage === "undefined") return;
+    // Only save tool call data, not full result data (keep it small)
+    const slim = {};
+    for (const [agent, calls] of Object.entries(traceHistory)) {
+      if (calls.length > 0) {
+        slim[agent] = calls.slice(-50); // keep last 50 per agent
+      }
+    }
+    localStorage.setItem(TRACE_STORAGE_KEY, JSON.stringify(slim));
+  } catch {
+    // best effort
+  }
+}
+
+function loadTraceHistory() {
+  try {
+    if (typeof localStorage === "undefined") return;
+    const raw = localStorage.getItem(TRACE_STORAGE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    for (const [agent, calls] of Object.entries(parsed)) {
+      if (Array.isArray(calls) && calls.length > 0) {
+        traceHistory[agent] = calls;
+      }
+    }
+  } catch {
+    // best effort
+  }
+}
+
+function saveUiSettings() {
+  try {
+    if (typeof localStorage === "undefined") return;
+    localStorage.setItem(
+      SETTINGS_STORAGE_KEY,
+      JSON.stringify({
+        hiddenAgentNames: Array.from(hiddenAgentNames),
+        campfireLabel: normalizeCampfireLabel(campfireLabel),
+      })
+    );
+  } catch {
+    // best effort only
+  }
+}
+
+function loadUiSettings() {
+  try {
+    if (typeof localStorage === "undefined") return;
+    const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed?.hiddenAgentNames)) {
+      hiddenAgentNames = new Set(
+        parsed.hiddenAgentNames
+          .map((name) => String(name || "").trim().toLowerCase())
+          .filter(Boolean)
+      );
+    }
+    if (typeof parsed?.campfireLabel === "string") {
+      campfireLabel = normalizeCampfireLabel(parsed.campfireLabel);
+    }
+  } catch {
+    hiddenAgentNames = hiddenAgentNames || new Set();
+    campfireLabel = campfireLabel || DEFAULT_CAMPFIRE_LABEL;
+  }
+}
+
+function applyCampfireLabelToUi(syncInput = true) {
+  const title = document.getElementById("campfire-title");
+  if (title) title.textContent = normalizeCampfireLabel(campfireLabel).toUpperCase();
+
+  const hint = document.getElementById("profile-campfire-hint-label");
+  if (hint) hint.textContent = normalizeCampfireLabel(campfireLabel).toLowerCase();
+
+  const input = document.getElementById("campfire-input");
+  if (input) input.placeholder = `say something to ${normalizeCampfireLabel(campfireLabel).toLowerCase()}...`;
+
+  const settingsInput = document.getElementById("settings-campfire-name");
+  if (syncInput && settingsInput) settingsInput.value = normalizeCampfireLabel(campfireLabel);
+
+  updateCampfireSession();
+}
+
+function renderSettingsAgentToggles() {
+  const list = document.getElementById("settings-agent-list");
+  if (!list) return;
+
+  if (!agents.length) {
+    list.innerHTML = '<div class="settings-agent-empty">loading roster...</div>';
+    return;
+  }
+
+  list.innerHTML = "";
+  for (const agent of agents) {
+    const row = document.createElement("label");
+    row.className = "settings-agent-row";
+    row.dataset.type = agent.type || "";
+
+    const check = document.createElement("input");
+    check.type = "checkbox";
+    check.checked = isAgentVisibleName(agent.name);
+    check.setAttribute("aria-label", `Toggle ${agent.name} visibility`);
+    check.addEventListener("change", () => {
+      setAgentVisibility(agent.name, check.checked);
+    });
+
+    const name = document.createElement("span");
+    name.className = "settings-agent-name";
+    name.textContent = agent.name;
+
+    const type = document.createElement("span");
+    type.className = "settings-agent-type";
+    type.textContent = agent.type || "agent";
+    type.dataset.type = agent.type || "";
+
+    row.appendChild(check);
+    row.appendChild(name);
+    row.appendChild(type);
+    list.appendChild(row);
+  }
+}
+
+function setAgentVisibility(agentName, visible) {
+  const key = String(agentName || "").trim().toLowerCase();
+  if (!key) return;
+
+  if (visible) hiddenAgentNames.delete(key);
+  else hiddenAgentNames.add(key);
+
+  reconcileSelectedAgentVisibility();
+  saveUiSettings();
+  renderSettingsAgentToggles();
+  if (view === "campfire") {
+    refreshCampfireAgentButtons();
+    updateCampfireSession();
+    renderCampfireMessages();
+  }
+}
+
+function toggleSettingsMenu(forceOpen) {
+  const root = document.getElementById("settings-menu");
+  const panel = document.getElementById("settings-menu-panel");
+  const toggle = document.getElementById("settings-menu-toggle");
+  if (!root || !panel || !toggle) return;
+
+  const shouldOpen = typeof forceOpen === "boolean" ? forceOpen : !settingsMenuOpen;
+  settingsMenuOpen = shouldOpen;
+  root.classList.toggle("open", settingsMenuOpen);
+  panel.hidden = !settingsMenuOpen;
+  toggle.setAttribute("aria-expanded", settingsMenuOpen ? "true" : "false");
+
+  if (settingsMenuOpen) {
+    if (worldMenuOpen) toggleWorldMenu(false);
+    renderSettingsAgentToggles();
+    applyCampfireLabelToUi(true);
+  }
+}
+
+function initSettingsMenu() {
+  const root = document.getElementById("settings-menu");
+  const panel = document.getElementById("settings-menu-panel");
+  const toggle = document.getElementById("settings-menu-toggle");
+  const campfireInput = document.getElementById("settings-campfire-name");
+  const allOnBtn = document.getElementById("settings-enable-all");
+  const allOffBtn = document.getElementById("settings-disable-all");
+  if (!root || !panel || !toggle || !campfireInput || !allOnBtn || !allOffBtn) return;
+
+  panel.hidden = true;
+  renderSettingsAgentToggles();
+  applyCampfireLabelToUi(true);
+
+  toggle.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    toggleSettingsMenu();
+  });
+
+  panel.addEventListener("click", (event) => {
+    event.stopPropagation();
+  });
+
+  campfireInput.addEventListener("input", () => {
+    const next = campfireInput.value.replace(/\s+/g, " ").trim();
+    if (!next) return;
+    campfireLabel = normalizeCampfireLabel(next);
+    saveUiSettings();
+    applyCampfireLabelToUi(false);
+  });
+
+  campfireInput.addEventListener("change", () => {
+    campfireLabel = normalizeCampfireLabel(campfireInput.value);
+    saveUiSettings();
+    applyCampfireLabelToUi(true);
+  });
+
+  allOnBtn.addEventListener("click", () => {
+    hiddenAgentNames.clear();
+    reconcileSelectedAgentVisibility();
+    saveUiSettings();
+    renderSettingsAgentToggles();
+    if (view === "campfire") {
+      refreshCampfireAgentButtons();
+      updateCampfireSession();
+      renderCampfireMessages();
+    }
+  });
+
+  allOffBtn.addEventListener("click", () => {
+    hiddenAgentNames = new Set(agents.map((agent) => String(agent.name || "").toLowerCase()).filter(Boolean));
+    reconcileSelectedAgentVisibility();
+    saveUiSettings();
+    renderSettingsAgentToggles();
+    if (view === "campfire") {
+      refreshCampfireAgentButtons();
+      updateCampfireSession();
+      renderCampfireMessages();
+    }
+  });
+
+  document.addEventListener("click", (event) => {
+    if (!settingsMenuOpen) return;
+    const target = event.target;
+    if (target instanceof Node && !root.contains(target)) {
+      toggleSettingsMenu(false);
+    }
+  });
+}
+
 function getDepthSortedAgents() {
-  return [...agents]
+  return agents
     .map((agent, originalIndex) => ({ agent, originalIndex }))
+    .filter(({ agent }) => isAgentVisibleName(agent.name))
     .sort((a, b) => (a.agent.pos?.y || 0) - (b.agent.pos?.y || 0));
 }
 
@@ -1283,7 +1765,9 @@ function findAgentAtCanvasPoint(canvasX, canvasY) {
 
 function getAgentByName(name) {
   if (!name) return null;
-  return agents.find((agent) => agent.name === name) || null;
+  const needle = String(name).trim().toLowerCase();
+  if (!needle) return null;
+  return agents.find((agent) => agent.name.toLowerCase() === needle) || null;
 }
 
 function getAgentAnchorClient(agent) {
@@ -1303,6 +1787,120 @@ function truncateText(text, maxChars) {
   if (!text) return "";
   if (text.length <= maxChars) return text;
   return text.slice(0, maxChars - 3) + "...";
+}
+
+function toPreviewText(value, maxChars = 220) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string") return truncateText(value, maxChars);
+  try {
+    const encoded = JSON.stringify(value);
+    return encoded ? truncateText(encoded, maxChars) : null;
+  } catch {
+    return "[unserializable]";
+  }
+}
+
+function resolveEventAgentName(entry) {
+  if (!entry || typeof entry !== "object") return null;
+
+  if (entry.agentName && getAgentByName(entry.agentName)) {
+    return entry.agentName;
+  }
+
+  if (typeof entry.message === "string") {
+    const directPrefix = entry.message.match(/^([a-z0-9_-]{2,40})\b/i);
+    if (directPrefix?.[1]) {
+      const candidate = directPrefix[1].toLowerCase();
+      if (getAgentByName(candidate)) return candidate;
+    }
+  }
+
+  return null;
+}
+
+function updateChatInputContextUI() {
+  const input = document.getElementById("chat-input");
+  if (input) {
+    if (activeChatEventContext && profileAgent && activeChatEventContext.agentName === profileAgent.name) {
+      input.placeholder = `continue from ${activeChatEventContext.time} ${activeChatEventContext.kind}...`;
+    } else {
+      input.placeholder = CHAT_INPUT_DEFAULT_PLACEHOLDER;
+    }
+  }
+
+  const chatLabel = document.getElementById("chat-agent-label");
+  if (chatLabel && profileAgent) {
+    const hasContext = Boolean(
+      activeChatEventContext && activeChatEventContext.agentName === profileAgent.name
+    );
+    chatLabel.textContent = hasContext
+      ? `${profileAgent.name} · ref ${activeChatEventContext.time}`
+      : profileAgent.name;
+    chatLabel.style.color = TYPE_COLORS[profileAgent.type] || "var(--fg-muted)";
+  }
+}
+
+function clearActiveChatEventContext() {
+  activeChatEventContext = null;
+  updateChatInputContextUI();
+}
+
+function setActiveChatEventContext(context) {
+  if (!context) {
+    clearActiveChatEventContext();
+    return;
+  }
+  activeChatEventContext = {
+    agentName: context.agentName,
+    time: context.time,
+    kind: context.kind,
+    message: context.message,
+    ts: context.ts,
+  };
+  updateChatInputContextUI();
+}
+
+function buildChatEventReferenceBlock(context) {
+  if (!context) return "";
+  return [
+    "[Event reference context]",
+    `time=${context.time}`,
+    `kind=${context.kind}`,
+    `agent=${context.agentName}`,
+    `event=${context.message}`,
+  ].join("\n");
+}
+
+function startConversationFromEvent(entry) {
+  const agentName = resolveEventAgentName(entry);
+  if (!agentName) return;
+  const agent = getAgentByName(agentName);
+  if (!agent) return;
+
+  const anchor = getAgentAnchorClient(agent) || {
+    x: Math.round(window.innerWidth * 0.3),
+    y: Math.round(window.innerHeight * 0.35),
+  };
+
+  showProfile(agent, { asMenu: true, anchor });
+
+  const normalized = toDialogEventText(entry);
+  const eventTs = typeof entry.ts === "number" ? entry.ts : Date.now();
+  setActiveChatEventContext({
+    agentName: agent.name,
+    time: entry.time || formatEventTime(eventTs),
+    kind: entry.kind || "info",
+    message: (typeof entry.message === "string" && entry.message.trim()) ? entry.message.trim() : normalized,
+    ts: eventTs,
+  });
+
+  const input = document.getElementById("chat-input");
+  if (!input) return;
+  if (!input.value.trim()) {
+    input.value = `follow up on: ${truncateText(normalized, 90)}`;
+  }
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
 }
 
 function isProfilePanelMenuOpen() {
@@ -1334,7 +1932,7 @@ function positionProfilePanelMenu(anchorClientX, anchorClientY) {
 function swapProfileMenuAgent(step) {
   const panel = document.getElementById("profile-panel");
   const profileVisible = Boolean(profileAgent && panel && panel.classList.contains("visible"));
-  if (!profileVisible || !agents.length) return;
+  if (!profileVisible) return;
 
   const sortedAgents = getDepthSortedAgents().map((entry) => entry.agent);
   if (!sortedAgents.length) return;
@@ -1389,9 +1987,33 @@ function positionAgentMenu(anchorClientX, anchorClientY) {
 
 function updateAgentMenuSummary(agent) {
   const bodyEl = document.getElementById("agent-menu-body");
+  const modelNameEl = document.getElementById("agent-menu-model-name");
+  const modelIconEl = document.getElementById("agent-menu-model-icon");
   if (!bodyEl || !agent) return;
   const runLabel = agent.lastRun ? timeAgo(agent.lastRun) : "never";
   bodyEl.textContent = `${agent.type} | ${agent.state} | run ${runLabel}`;
+
+  if (!modelNameEl || !modelIconEl) return;
+  const modelMeta = agentModelInfo[agent.name] || null;
+  const fetchState = agentModelFetchState[agent.name];
+
+  if (modelMeta?.modelId) {
+    modelNameEl.textContent = getModelDisplayName(modelMeta.modelId);
+  } else if (fetchState === "loading") {
+    modelNameEl.textContent = "loading...";
+  } else if (fetchState === "error") {
+    modelNameEl.textContent = "model unavailable";
+  } else {
+    modelNameEl.textContent = "model ...";
+  }
+
+  if (modelMeta?.iconPath) {
+    modelIconEl.src = modelMeta.iconPath;
+    modelIconEl.hidden = false;
+  } else {
+    modelIconEl.hidden = true;
+    modelIconEl.removeAttribute("src");
+  }
 }
 
 function openAgentMenu(agent, anchorClientX, anchorClientY) {
@@ -1403,6 +2025,11 @@ function openAgentMenu(agent, anchorClientX, anchorClientY) {
   agentMenuAgentName = agent.name;
   nameEl.textContent = agent.name;
   updateAgentMenuSummary(agent);
+  fetchAgentModelInfo(agent.name).then(() => {
+    if (!agentMenuOpen || agentMenuAgentName !== agent.name) return;
+    const currentAgent = getAgentByName(agent.name) || agent;
+    updateAgentMenuSummary(currentAgent);
+  });
   menu.hidden = false;
   const followAnchor = getAgentAnchorClient(agent) || { x: anchorClientX, y: anchorClientY };
   positionAgentMenu(followAnchor.x, followAnchor.y);
@@ -1555,7 +2182,6 @@ function closeAgentProfileWindow() {
 }
 
 function getAdjacentMiniProfileAgent(step) {
-  if (!agents.length) return null;
   const sortedAgents = getDepthSortedAgents().map((entry) => entry.agent);
   if (!sortedAgents.length) return null;
   if (!agentProfileWindowAgentName) return sortedAgents[0];
@@ -1586,7 +2212,7 @@ function syncFloatingMenusToAgents() {
 
   if (agentMenuOpen && agentMenuAgentName) {
     const agent = getAgentByName(agentMenuAgentName);
-    if (!agent) {
+    if (!agent || !isAgentVisibleName(agent.name)) {
       closeAgentMenu();
     } else {
       updateAgentMenuSummary(agent);
@@ -1597,7 +2223,7 @@ function syncFloatingMenusToAgents() {
 
   if (agentProfileWindowOpen && agentProfileWindowAgentName) {
     const agent = getAgentByName(agentProfileWindowAgentName);
-    if (!agent) {
+    if (!agent || !isAgentVisibleName(agent.name)) {
       closeAgentProfileWindow();
     } else {
       const anchor = getAgentAnchorClient(agent);
@@ -1611,7 +2237,7 @@ function syncFloatingMenusToAgents() {
 
   if (isProfilePanelMenuOpen() && profileAgent?.name) {
     const liveAgent = getAgentByName(profileAgent.name);
-    if (!liveAgent) {
+    if (!liveAgent || !isAgentVisibleName(liveAgent.name)) {
       hideProfile();
       return;
     }
@@ -1658,6 +2284,7 @@ function handleCanvasPointerMove(event) {
 function initAgentMenu() {
   const menu = document.getElementById("agent-menu");
   const profileBtn = document.getElementById("agent-menu-profile");
+  const modelBtn = document.getElementById("agent-menu-model");
   const closeBtn = document.getElementById("agent-menu-close");
   if (!menu || !profileBtn || !closeBtn) return;
 
@@ -1675,6 +2302,19 @@ function initAgentMenu() {
     closeAgentMenu();
     showProfile(agent, { asMenu: true, anchor });
   });
+
+  if (modelBtn) {
+    modelBtn.addEventListener("click", () => {
+      if (!agentMenuAgentName) return;
+      const agent = getAgentByName(agentMenuAgentName);
+      if (!agent) {
+        closeAgentMenu();
+        return;
+      }
+      closeAgentMenu();
+      openModelPicker(agent.name);
+    });
+  }
 
   closeBtn.addEventListener("click", () => {
     closeAgentMenu();
@@ -1811,14 +2451,42 @@ function getNearbyInteractionPoint(x, y, maxDist = 24) {
   return nearest;
 }
 
+function steerAgentVelocity(agent, desiredX, desiredY, delta) {
+  const frameScale = Math.max(0.6, Math.min(2.2, delta / 16));
+  const blend = Math.min(0.9, MOVE_TARGET_BLEND * frameScale);
+  agent.vel.x += (desiredX - agent.vel.x) * blend;
+  agent.vel.y += (desiredY - agent.vel.y) * blend;
+}
+
+function dampAgentVelocity(agent, delta, base = MOVE_IDLE_DAMP) {
+  const frameScale = Math.max(0.6, Math.min(2.2, delta / 16));
+  const keep = Math.pow(base, frameScale);
+  agent.vel.x *= keep;
+  agent.vel.y *= keep;
+  if (Math.abs(agent.vel.x) < 0.0005) agent.vel.x = 0;
+  if (Math.abs(agent.vel.y) < 0.0005) agent.vel.y = 0;
+}
+
+function updateFacingFromVelocity(agent, delta = 16) {
+  const remainingLock = Number.isFinite(agent._facingLockMs) ? agent._facingLockMs : 0;
+  if (remainingLock > 0) {
+    agent._facingLockMs = Math.max(0, remainingLock - delta);
+    return;
+  }
+  if (Math.abs(agent.vel.x) > MOVE_FACING_DEADZONE) {
+    agent.facing = agent.vel.x > 0 ? 1 : -1;
+  }
+}
+
 // ---- Aquarium Rendering ----
 
 function updateAquarium(delta) {
   ensurePixelField(canvas.width, canvas.height);
   const margin = SPRITE_DISPLAY / 2;
+  const activeAgents = getVisibleAgents();
 
-  for (let i = 0; i < agents.length; i++) {
-    const a = agents[i];
+  for (let i = 0; i < activeAgents.length; i++) {
+    const a = activeAgents[i];
 
     // Init physics state if missing
     if (!a.pos) {
@@ -1834,6 +2502,7 @@ function updateAquarium(delta) {
       a.action = "idle";
       a.actionTimer = Math.random() * 2000;
       a.moveSpeed = 0.028 + Math.random() * 0.015;
+      a._facingLockMs = 0;
       logAgentEvent(`${a.name} entered the habitat`, {
         agentName: a.name,
         kind: "social",
@@ -1841,7 +2510,23 @@ function updateAquarium(delta) {
         cooldownMs: 600000,
       });
     }
+    if (!a.vel) a.vel = { x: 0, y: 0 };
     if (!a.moveSpeed) a.moveSpeed = 0.028 + Math.random() * 0.015;
+    if (!Number.isFinite(a._facingLockMs)) a._facingLockMs = 0;
+    if (a.targetAgent && !isAgentVisibleName(a.targetAgent.name)) {
+      a.targetAgent = null;
+      if (a.action === "seeking_friend") {
+        a.action = "walking";
+        a.actionTimer = 2400 + Math.random() * 3200;
+        a.target = pickIntentionalTarget(true);
+      }
+    }
+    if ((a.action === "seeking_friend" || a.action === "chatting") && (!a.targetAgent || !a.targetAgent.pos)) {
+      a.action = "walking";
+      a.actionTimer = 1800 + Math.random() * 2600;
+      a.target = pickIntentionalTarget(true);
+      a.targetAgent = null;
+    }
 
     // AI State Machine
     a.actionTimer -= delta;
@@ -1869,7 +2554,7 @@ function updateAquarium(delta) {
           a.action = "seeking_friend";
           a.actionTimer = 5000 + Math.random() * 5000;
           // Find a random other agent
-          const others = agents.filter((other) => other !== a && other.action !== "seeking_friend");
+          const others = activeAgents.filter((other) => other !== a && other.action !== "seeking_friend");
           const friend = others[Math.floor(Math.random() * others.length)];
           if (friend) {
             a.targetAgent = friend;
@@ -1919,25 +2604,31 @@ function updateAquarium(delta) {
 
       if (dist > 44) {
         const speed = a.moveSpeed + 0.01;
-        a.vel.x = (dx / dist) * speed;
-        a.vel.y = (dy / dist) * speed;
-        a.facing = a.vel.x > 0 ? 1 : -1;
-        const nextX = a.pos.x + a.vel.x * delta;
-        const nextY = a.pos.y + a.vel.y * delta;
-        if (!isWalkablePosition(nextX, nextY)) {
+        const desiredX = (dx / dist) * speed;
+        const desiredY = (dy / dist) * speed;
+        steerAgentVelocity(a, desiredX, desiredY, delta);
+        const probeX = a.pos.x + a.vel.x * delta;
+        const probeY = a.pos.y + a.vel.y * delta;
+        if (!isWalkablePosition(probeX, probeY)) {
           a.action = "walking";
           a.actionTimer = 2400 + Math.random() * 3000;
           a.target = pickIntentionalTarget(true);
           a.targetAgent = null;
+          dampAgentVelocity(a, delta, 0.7);
         }
       } else {
         // Reached friend, start chatting
         const partner = a.targetAgent?.name;
         a.action = "chatting";
         a.actionTimer = 3000 + Math.random() * 5000;
-        a.vel = { x: 0, y: 0 };
-        a.facing = a.targetAgent.pos.x > a.pos.x ? 1 : -1;
-        a.targetAgent.facing = a.targetAgent.pos.x > a.pos.x ? -1 : 1; // Make them face each other
+        dampAgentVelocity(a, delta, 0.65);
+        const faceDx = a.targetAgent.pos.x - a.pos.x;
+        if (Math.abs(faceDx) > 1) {
+          a.facing = faceDx > 0 ? 1 : -1;
+          a.targetAgent.facing = faceDx > 0 ? -1 : 1; // Make them face each other.
+          a._facingLockMs = 220;
+          a.targetAgent._facingLockMs = 220;
+        }
         if (partner) {
           logAgentEvent(`${a.name} started chatting with ${partner}`, {
             agentName: a.name,
@@ -1952,16 +2643,25 @@ function updateAquarium(delta) {
       const dy = a.target.y - a.pos.y;
       const dist = Math.sqrt(dx * dx + dy * dy);
 
-      if (dist > 5) {
-        const speed = a.moveSpeed;
-        a.vel.x = (dx / dist) * speed;
-        a.vel.y = (dy / dist) * speed;
-        a.facing = a.vel.x > 0 ? 1 : -1;
+      if (dist > WALK_ARRIVE_RADIUS) {
+        const slowFactor = dist < WALK_SLOW_RADIUS
+          ? Math.max(0.35, dist / WALK_SLOW_RADIUS)
+          : 1;
+        const speed = a.moveSpeed * slowFactor;
+        const desiredX = (dx / dist) * speed;
+        const desiredY = (dy / dist) * speed;
+        steerAgentVelocity(a, desiredX, desiredY, delta);
       } else {
         a.action = "idle";
-        a.vel = { x: 0, y: 0 };
+        a.actionTimer = 900 + Math.random() * 1600;
+        a.target = null;
+        dampAgentVelocity(a, delta, 0.65);
       }
+    } else {
+      dampAgentVelocity(a, delta);
     }
+
+    updateFacingFromVelocity(a, delta);
 
     // Apply velocity
     const nextX = a.pos.x + a.vel.x * delta;
@@ -1970,8 +2670,8 @@ function updateAquarium(delta) {
       a.pos.x = nextX;
       a.pos.y = nextY;
     } else if (a.action !== "chatting") {
-      a.vel.x *= -0.35;
-      a.vel.y *= -0.35;
+      a.vel.x = 0;
+      a.vel.y = 0;
       a.action = "walking";
       a.actionTimer = 2200 + Math.random() * 3200;
       a.target = pickIntentionalTarget(true);
@@ -2098,6 +2798,44 @@ function drawEnvironment(ctx, w, h, timestamp = 0) {
   ctx.restore();
 }
 
+function drawFloatingModelTag(ctx, modelMeta, spriteX, spriteY, spriteSize, timestamp, phase, isSelected) {
+  if (!modelMeta?.modelId) return;
+
+  const iconImage = getModelIconImage(modelMeta);
+  if (!iconImage && !modelMeta.label) return;
+
+  const orbitRadius = Math.max(3, spriteSize * 0.08);
+  const iconSize = Math.max(10, Math.round(spriteSize * 0.22));
+  const angle = timestamp * MODEL_ICON_ORBIT_SPEED + phase;
+  const bob = Math.sin(timestamp * 0.0031 + phase * 1.7) * (MODEL_ICON_FLOAT_AMPLITUDE * 0.38);
+  const anchorX = spriteX + spriteSize * 0.62;
+  const anchorY = spriteY + spriteSize * 0.14;
+  const iconCenterX = anchorX + Math.cos(angle) * orbitRadius;
+  const iconCenterY = anchorY + Math.sin(angle * 1.17) * (orbitRadius * 0.4) + bob;
+  const left = Math.floor(iconCenterX - iconSize / 2);
+  const top = Math.floor(iconCenterY - iconSize / 2);
+
+  ctx.save();
+  ctx.imageSmoothingEnabled = false;
+  ctx.globalAlpha = isSelected ? 1 : 0.92;
+
+  if (iconImage) {
+    ctx.drawImage(iconImage, left, top, iconSize, iconSize);
+  } else if (modelMeta.label) {
+    const fallback = modelMeta.label.slice(0, 6);
+    ctx.font = "7px 'Departure Mono', monospace";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    ctx.shadowColor = "rgba(0, 0, 0, 0.6)";
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetX = 1;
+    ctx.shadowOffsetY = 1;
+    ctx.fillStyle = "#b5ccff";
+    ctx.fillText(fallback, left, top + Math.floor((iconSize - 7) / 2));
+  }
+  ctx.restore();
+}
+
 function drawAquarium(timestamp) {
   // Redraw environment every frame before agents
   drawEnvironment(ctx, canvas.width, canvas.height, timestamp);
@@ -2184,30 +2922,16 @@ function drawAquarium(timestamp) {
     }
     ctx.restore();
 
-    // Selected model badge: pin a compact label to the sprite corner.
+    // Selected model badge: model icon floats around the agent head.
     const modelMeta = agentModelInfo[agent.name];
-    if (modelMeta?.isOverride && modelMeta.label) {
-      const label = modelMeta.label;
-      ctx.save();
-      ctx.font = "7px 'JetBrains Mono', monospace";
-      ctx.textAlign = "left";
-      ctx.textBaseline = "top";
-      const tagW = Math.ceil(ctx.measureText(label).width) + 5;
-      const tagH = 8;
-      const tagX = Math.floor(x + SPRITE_DISPLAY - tagW - 1);
-      const tagY = Math.floor(drawY + 1);
-      ctx.fillStyle = "rgba(8, 12, 20, 0.9)";
-      ctx.fillRect(tagX, tagY, tagW, tagH);
-      ctx.fillStyle = isSelected ? "#d9ebff" : "#a9c4ff";
-      ctx.fillText(label, tagX + 2, tagY + 1);
-      ctx.restore();
-    }
+    const modelPhase = originalIndex * 0.83 + agent.name.length * 0.37;
+    drawFloatingModelTag(ctx, modelMeta, x, drawY, SPRITE_DISPLAY, timestamp, modelPhase, isSelected);
     
     // Status particles: use pixel tags with pulse + short-lived motion.
     const drawIndicatorTag = (text, centerX, centerY, fg, alpha = 1) => {
       if (!text) return;
       ctx.save();
-      ctx.font = "8px 'JetBrains Mono', monospace";
+      ctx.font = "8px 'Departure Mono', monospace";
       ctx.textAlign = "center";
       ctx.textBaseline = "top";
       const tw = Math.ceil(ctx.measureText(text).width);
@@ -2266,7 +2990,7 @@ function drawAquarium(timestamp) {
     ctx.save();
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
-    ctx.font = "8px 'JetBrains Mono', monospace";
+    ctx.font = "8px 'Departure Mono', monospace";
     const nameWidth = Math.ceil(ctx.measureText(nameText).width) + 8;
     const nameHeight = 10;
     const nameLeft = Math.floor(labelX - nameWidth / 2);
@@ -2281,7 +3005,7 @@ function drawAquarium(timestamp) {
 
     if (agent.lastRun) {
       const runText = timeAgo(agent.lastRun).toUpperCase();
-      ctx.font = "7px 'JetBrains Mono', monospace";
+      ctx.font = "7px 'Departure Mono', monospace";
       const runWidth = Math.ceil(ctx.measureText(runText).width) + 6;
       const runHeight = 8;
       const runLeft = Math.floor(labelX - runWidth / 2);
@@ -2302,16 +3026,17 @@ function drawAquarium(timestamp) {
 function updateBubble(timestamp) {
   const overlay = document.getElementById("bubble-overlay");
   if (!overlay) return;
-  if (agents.length === 0) {
+  const visibleAgents = getVisibleAgents();
+  if (visibleAgents.length === 0) {
     overlay.classList.remove("visible");
     overlay.style.opacity = "";
     return;
   }
 
-  // Rotate through ALL agents' bubbles
+  // Rotate through visible agents' bubbles.
   if (timestamp - lastBubbleRotate > BUBBLE_ROTATE_MS) {
     lastBubbleRotate = timestamp;
-    bubbleIndex = (bubbleIndex + 1) % agents.length;
+    bubbleIndex = (bubbleIndex + 1) % visibleAgents.length;
     bubbleVisibleUntil = timestamp + BUBBLE_VISIBLE_MS;
   }
   if (bubbleVisibleUntil === 0) {
@@ -2325,7 +3050,8 @@ function updateBubble(timestamp) {
     return;
   }
 
-  const agent = agents[bubbleIndex];
+  if (bubbleIndex >= visibleAgents.length) bubbleIndex = 0;
+  const agent = visibleAgents[bubbleIndex];
   if (!agent) return;
   const bubble = typeof agent.bubble === "string" && agent.bubble.trim() ? agent.bubble.trim() : "...";
   if (activeBubbleAgentName !== agent.name || activeBubbleText !== bubble) {
@@ -2334,6 +3060,12 @@ function updateBubble(timestamp) {
       `<div class="bubble-body">${escapeHtml(bubble)}</div>`;
     activeBubbleAgentName = agent.name;
     activeBubbleText = bubble;
+    logAgentEvent(truncateText(bubble.replace(/\s+/g, " "), 96), {
+      agentName: agent.name,
+      kind: "chat",
+      dedupeKey: `bubble:${agent.name}:${bubble.slice(0, 64)}`,
+      cooldownMs: 9000,
+    });
   }
 
   const elapsed = BUBBLE_VISIBLE_MS - timeLeft;
@@ -2399,20 +3131,49 @@ async function loadSessionHistory(agentName) {
   }
 }
 
+/**
+ * Rebuild traceHistory from chat messages that have toolCalls attached.
+ * Called when opening a profile to restore trace state from in-session history.
+ */
+function rebuildTraceHistory(agentName) {
+  const history = chatHistory[agentName] || [];
+  if (!traceHistory[agentName]) traceHistory[agentName] = [];
+  const existingIds = new Set(traceHistory[agentName].map((tc) => tc.id));
+  for (const msg of history) {
+    if (msg.toolCalls) {
+      for (const tc of msg.toolCalls) {
+        if (!existingIds.has(tc.id)) {
+          traceHistory[agentName].push(tc);
+          existingIds.add(tc.id);
+        }
+      }
+    }
+  }
+}
+
 function renderTraceEntries(agentName) {
   const container = document.getElementById("trace-entries");
   if (!container) return;
 
-  const entries = traceHistory[agentName] || [];
+  const allEntries = traceHistory[agentName] || [];
   if (!traceExpandedIds[agentName]) traceExpandedIds[agentName] = new Set();
   const expanded = traceExpandedIds[agentName];
+  const filter = traceFilterIds[agentName] || null;
 
-  if (entries.length === 0) {
+  // Apply filter if set
+  const entries = filter ? allEntries.filter((tc) => filter.has(tc.id)) : allEntries;
+
+  if (allEntries.length === 0) {
     container.innerHTML = '<div class="trace-empty">tool calls appear here</div>';
     return;
   }
 
-  container.innerHTML = entries.map((tc) => {
+  // Show all button when filtered
+  const filterBar = filter
+    ? `<div class="trace-filter-bar"><span>${entries.length} of ${allEntries.length} calls</span><button class="trace-show-all" type="button">ALL</button></div>`
+    : "";
+
+  container.innerHTML = filterBar + entries.map((tc) => {
     const isExpanded = expanded.has(tc.id);
     const statusClass = tc.result.success ? "success" : "error";
     const argsStr = Object.keys(tc.args).length > 0 ? JSON.stringify(tc.args, null, 2) : "{}";
@@ -2452,13 +3213,31 @@ function renderTraceEntries(agentName) {
     });
   });
 
+  // "ALL" button clears the filter
+  const showAllBtn = container.querySelector(".trace-show-all");
+  if (showAllBtn) {
+    showAllBtn.addEventListener("click", () => {
+      traceFilterIds[agentName] = null;
+      renderTraceEntries(agentName);
+      // Clear active-trace highlight on chat messages
+      const chatContainer = document.getElementById("chat-messages");
+      if (chatContainer) {
+        chatContainer.querySelectorAll(".chat-msg.active-trace").forEach((el) => el.classList.remove("active-trace"));
+      }
+    });
+  }
+
   // Auto-scroll to bottom
   container.scrollTop = container.scrollHeight;
 
   // Update trace status count
   const statusEl = document.getElementById("trace-status");
   if (statusEl) {
-    statusEl.textContent = `${entries.length} call${entries.length !== 1 ? "s" : ""}`;
+    const total = allEntries.length;
+    const shown = entries.length;
+    statusEl.textContent = filter
+      ? `${shown}/${total} calls`
+      : `${total} call${total !== 1 ? "s" : ""}`;
   }
 }
 
@@ -2484,7 +3263,7 @@ function renderChatMessages(agentName) {
   }
 
   container.innerHTML = history
-    .map((msg) => {
+    .map((msg, idx) => {
       if (msg.role === "user") {
         // Check for attached photo
         if (msg.photo) {
@@ -2496,9 +3275,45 @@ function renderChatMessages(agentName) {
         }
         return `<div class="chat-msg user">${escapeHtml(msg.content)}</div>`;
       }
-      return `<div class="chat-msg agent" data-type="${profileAgent?.type || ""}">${escapeHtml(msg.content)}</div>`;
+      const tcCount = msg.toolCalls ? msg.toolCalls.length : 0;
+      const tcBadge = tcCount > 0
+        ? `<span class="chat-msg-tc-badge" data-msg-idx="${idx}">${tcCount} call${tcCount !== 1 ? "s" : ""}</span>`
+        : "";
+      const clickable = tcCount > 0 ? ` has-traces` : "";
+      return `<div class="chat-msg agent${clickable}" data-type="${profileAgent?.type || ""}" data-msg-idx="${idx}">${escapeHtml(msg.content)}${tcBadge}</div>`;
     })
     .join("");
+
+  // Click handler: clicking an agent message with tool calls shows them in trace panel
+  container.querySelectorAll(".chat-msg.has-traces").forEach((el) => {
+    el.addEventListener("click", () => {
+      const idx = parseInt(el.getAttribute("data-msg-idx"), 10);
+      const msg = history[idx];
+      if (!msg || !msg.toolCalls) return;
+
+      // Populate trace panel with this message's tool calls
+      if (!traceHistory[agentName]) traceHistory[agentName] = [];
+
+      // Check if these calls are already in traceHistory (avoid duplicates)
+      const existingIds = new Set(traceHistory[agentName].map((tc) => tc.id));
+      for (const tc of msg.toolCalls) {
+        if (!existingIds.has(tc.id)) {
+          traceHistory[agentName].push(tc);
+        }
+      }
+
+      // Highlight this message's calls by setting a filter
+      traceFilterIds[agentName] = new Set(msg.toolCalls.map((tc) => tc.id));
+      renderTraceEntries(agentName);
+
+      // Make trace panel visible
+      setTracePanelVisible(true);
+
+      // Visual feedback: highlight the clicked message
+      container.querySelectorAll(".chat-msg.active-trace").forEach((el) => el.classList.remove("active-trace"));
+      el.classList.add("active-trace");
+    });
+  });
 
   // Scroll to bottom
   container.scrollTop = container.scrollHeight;
@@ -2558,6 +3373,15 @@ async function sendChat(agentName, message) {
   if (!message.trim() && !pendingUpload) return;
   // Default message when uploading with no text
   if (!message.trim() && pendingUpload) message = "analyze this";
+  const contextRef = activeChatEventContext && activeChatEventContext.agentName === agentName
+    ? activeChatEventContext
+    : null;
+  const messageForServer = contextRef
+    ? `${buildChatEventReferenceBlock(contextRef)}\n\nUser follow-up: ${message}`
+    : message;
+  if (contextRef) {
+    clearActiveChatEventContext();
+  }
 
   const history = getHistory(agentName);
   // Store message with photo metadata if there's a pending upload
@@ -2597,7 +3421,7 @@ async function sendChat(agentName, message) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        message,
+        message: messageForServer,
         uploadId,
         history: history
           .filter((m) => m.role !== "system")
@@ -2612,7 +3436,7 @@ async function sendChat(agentName, message) {
     if (data.error) {
       thinkingEl.remove();
       history.push({ role: "assistant", content: `[error: ${data.error}]` });
-      logAgentEvent(`${agentName} returned an error`, {
+      logAgentEvent(`report failed: ${truncateText(String(data.error).replace(/\s+/g, " "), 60)}`, {
         agentName,
         kind: "state",
         dedupeKey: `chat-error:${agentName}:${String(data.error).slice(0, 48)}`,
@@ -2620,8 +3444,13 @@ async function sendChat(agentName, message) {
       });
     } else {
       thinkingEl.remove();
-      history.push({ role: "assistant", content: data.response });
-      logAgentEvent(`${agentName} replied: ${truncateText(String(data.response || "").replace(/\s+/g, " "), 68)}`, {
+      const msgEntry = { role: "assistant", content: data.response };
+      // Attach tool calls to the message so they persist and can be inspected
+      if (data.toolCalls && data.toolCalls.length > 0) {
+        msgEntry.toolCalls = data.toolCalls;
+      }
+      history.push(msgEntry);
+      logAgentEvent(truncateText(String(data.response || "").replace(/\s+/g, " "), 84), {
         agentName,
         kind: "chat",
         dedupeKey: `reply:${agentName}:${String(data.response || "").slice(0, 56)}`,
@@ -2642,18 +3471,19 @@ async function sendChat(agentName, message) {
               traceId: tc.id || null,
               traceName: tc.name || null,
               durationMs: typeof tc.durationMs === "number" ? tc.durationMs : null,
-              argsPreview: tc.args ? truncateText(JSON.stringify(tc.args), 220) : null,
-              resultPreview: tc.result ? truncateText(JSON.stringify(tc.result), 220) : null,
+              argsPreview: toPreviewText(tc.args, 220),
+              resultPreview: toPreviewText(tc.result, 220),
             },
           });
         }
         renderTraceEntries(agentName);
+        saveTraceHistory();
       }
     }
   } catch (err) {
     thinkingEl.remove();
     history.push({ role: "assistant", content: `[could not reach ${agentName}]` });
-    logAgentEvent(`${agentName} is unreachable`, {
+    logAgentEvent("report failed: unreachable", {
       agentName,
       kind: "state",
       dedupeKey: `unreachable:${agentName}`,
@@ -2730,18 +3560,20 @@ async function speakAgent(agentName, text) {
 
 // ---- Campfire View ----
 
-function showCampfire() {
-  if (isProfilePanelMenuOpen() || view === "profile") hideProfile();
-  closeAgentMenu();
-  closeAgentProfileWindow();
-  view = "campfire";
-  const panel = document.getElementById("campfire-panel");
-  panel.classList.add("visible");
-
-  // Build agent selection grid
+function refreshCampfireAgentButtons() {
   const grid = document.getElementById("campfire-agent-grid");
+  if (!grid) return [];
+
+  const visibleAgents = getVisibleAgents();
+  pruneCampfireSelectionToVisible();
   grid.innerHTML = "";
-  for (const agent of agents) {
+
+  if (!visibleAgents.length) {
+    grid.innerHTML = '<div class="campfire-select-empty">no visible agents (enable from settings)</div>';
+    return visibleAgents;
+  }
+
+  for (const agent of visibleAgents) {
     const btn = document.createElement("button");
     btn.className = "campfire-agent-btn";
     btn.setAttribute("data-type", agent.type);
@@ -2761,18 +3593,32 @@ function showCampfire() {
     grid.appendChild(btn);
   }
 
-  // Default: select all if none selected
+  // Default to all visible agents when opening with an empty selection.
   if (campfireSelected.size === 0) {
-    agents.forEach((a) => campfireSelected.add(a.name));
-    grid.querySelectorAll(".campfire-agent-btn").forEach((b) => b.classList.add("selected"));
+    visibleAgents.forEach((agent) => campfireSelected.add(agent.name));
+    grid.querySelectorAll(".campfire-agent-btn").forEach((button) => button.classList.add("selected"));
   }
+
+  return visibleAgents;
+}
+
+function showCampfire() {
+  if (isProfilePanelMenuOpen() || view === "profile") hideProfile();
+  closeAgentMenu();
+  closeAgentProfileWindow();
+  view = "campfire";
+  const panel = document.getElementById("campfire-panel");
+  panel.classList.add("visible");
+  const visibleAgents = refreshCampfireAgentButtons();
 
   updateCampfireSession();
   renderCampfireMessages();
 
-  setTimeout(() => {
-    document.getElementById("campfire-input").focus();
-  }, 100);
+  if (visibleAgents.length > 0) {
+    setTimeout(() => {
+      document.getElementById("campfire-input").focus();
+    }, 100);
+  }
 }
 
 function hideCampfire() {
@@ -2783,9 +3629,12 @@ function hideCampfire() {
 
 function updateCampfireSession() {
   const sessionEl = document.getElementById("campfire-session");
+  if (!sessionEl) return;
+  pruneCampfireSelectionToVisible();
+  const visibleCount = getVisibleAgents().length;
   const names = [...campfireSelected].sort();
-  if (names.length === agents.length) {
-    sessionEl.textContent = "dex:campfire";
+  if (visibleCount > 0 && names.length === visibleCount) {
+    sessionEl.textContent = `dex:${getCampfireSessionToken()}`;
   } else if (names.length === 0) {
     sessionEl.textContent = "select agents";
   } else {
@@ -2795,6 +3644,13 @@ function updateCampfireSession() {
 
 function renderCampfireMessages() {
   const container = document.getElementById("campfire-messages");
+  if (!container) return;
+  const visibleCount = getVisibleAgents().length;
+  if (visibleCount === 0) {
+    container.innerHTML =
+      '<div style="color: var(--fg-muted); font-size: 11px; font-family: var(--font-mono); padding: 16px 0; text-align: center;">enable at least one agent in settings</div>';
+    return;
+  }
   if (campfireMessages.length === 0) {
     container.innerHTML =
       '<div style="color: var(--fg-muted); font-size: 11px; font-family: var(--font-mono); padding: 16px 0; text-align: center;">select agents and start a conversation</div>';
@@ -2822,6 +3678,7 @@ function renderCampfireMessages() {
 }
 
 async function sendCampfire(message) {
+  pruneCampfireSelectionToVisible();
   const selected = [...campfireSelected];
   if (selected.length < 2 || campfireSending) return;
 
@@ -2856,10 +3713,16 @@ async function sendCampfire(message) {
         message: message && message.trim() ? message.trim() : undefined,
         history,
         rounds: 1,
+        sessionId: campfireSessionId || undefined,
       }),
     });
 
     const data = await res.json();
+
+    // Track the session ID so adding/removing peers continues the same session
+    if (data.session) {
+      campfireSessionId = data.session;
+    }
     
     // Remove thinking indicator
     campfireMessages = campfireMessages.filter((m) => m.type !== "thinking");
@@ -2867,7 +3730,7 @@ async function sendCampfire(message) {
     // Show response
     if (data.error) {
       campfireMessages.push({ agent: "system", message: `error: ${data.error}`, type: "error" });
-      logAgentEvent(`campfire error: ${truncateText(String(data.error), 72)}`, {
+      logAgentEvent(`report failed: ${truncateText(String(data.error).replace(/\s+/g, " "), 60)}`, {
         kind: "state",
         dedupeKey: `campfire-error:${String(data.error).slice(0, 48)}`,
         cooldownMs: 1400,
@@ -2875,7 +3738,7 @@ async function sendCampfire(message) {
     } else if (data.messages) {
       for (const line of data.messages) {
         campfireMessages.push({ agent: line.agent, message: line.message, type: "agent" });
-        logAgentEvent(`${line.agent}: ${truncateText(String(line.message).replace(/\s+/g, " "), 70)}`, {
+        logAgentEvent(truncateText(String(line.message).replace(/\s+/g, " "), 84), {
           agentName: line.agent,
           kind: "chat",
           dedupeKey: `campfire-line:${line.agent}:${String(line.message).slice(0, 52)}`,
@@ -2886,7 +3749,7 @@ async function sendCampfire(message) {
   } catch (err) {
     campfireMessages = campfireMessages.filter((m) => m.type !== "thinking");
     campfireMessages.push({ agent: "system", message: "could not reach agents", type: "error" });
-    logAgentEvent("campfire agents unreachable", {
+    logAgentEvent("report failed: campfire unreachable", {
       kind: "state",
       dedupeKey: "campfire-unreachable",
       cooldownMs: 2600,
@@ -2902,6 +3765,19 @@ async function sendCampfire(message) {
 // ---- Profile View ----
 
 function showProfile(agent, options = {}) {
+  const setProfileStatusInfo = (value) => {
+    const statusEl = document.getElementById("profile-status-info");
+    if (!statusEl) return;
+    const text = typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+    if (!text || text === "...") {
+      statusEl.textContent = "";
+      statusEl.hidden = true;
+      return;
+    }
+    statusEl.textContent = `Status: ${text}`;
+    statusEl.hidden = false;
+  };
+
   const asMenu = Boolean(options.asMenu);
   closeAgentMenu();
   closeAgentProfileWindow();
@@ -2914,12 +3790,15 @@ function showProfile(agent, options = {}) {
 
   profileData = null;
   profileAgent = agent;
+  if (activeChatEventContext && activeChatEventContext.agentName !== agent.name) {
+    clearActiveChatEventContext();
+  }
   fetchAgentModelInfo(agent.name);
 
   const panel = document.getElementById("profile-panel");
   panel.classList.add("visible");
   panel.classList.toggle("menu-mode", asMenu);
-  setTracePanelVisible(!asMenu);
+  setTracePanelVisible(true);
 
   if (asMenu) {
     profilePanelMenuAnchor = options.anchor || getAgentAnchorClient(agent) || profilePanelMenuAnchor;
@@ -2956,13 +3835,10 @@ function showProfile(agent, options = {}) {
 
   // Bubble
   document.getElementById("profile-bubble-text").textContent = agent.bubble;
+  setProfileStatusInfo(agent.bubble);
 
-  // Chat agent label
-  const chatLabel = document.getElementById("chat-agent-label");
-  if (chatLabel) {
-    chatLabel.textContent = agent.name;
-    chatLabel.style.color = TYPE_COLORS[agent.type] || "var(--fg-muted)";
-  }
+  // Chat header + placeholder can reflect active event-reference context.
+  updateChatInputContextUI();
 
   // Show upload button only for photoblogger
   const uploadBtn = document.getElementById("photo-upload-btn");
@@ -2972,6 +3848,7 @@ function showProfile(agent, options = {}) {
   clearPendingUpload();
 
   // Chat history + trace panel
+  rebuildTraceHistory(agent.name);
   renderChatMessages(agent.name);
   loadSessionHistory(agent.name); // async: populates from Honcho if local is empty
   renderTraceEntries(agent.name);
@@ -2979,7 +3856,7 @@ function showProfile(agent, options = {}) {
   // Build invite grid (pair with other agents)
   const inviteGrid = document.getElementById("invite-agent-grid");
   inviteGrid.innerHTML = "";
-  for (const other of agents) {
+  for (const other of getVisibleAgents()) {
     if (other.name === agent.name) continue;
     const btn = document.createElement("button");
     btn.className = "invite-agent-btn";
@@ -2990,6 +3867,7 @@ function showProfile(agent, options = {}) {
       hideProfile();
       campfireSelected = new Set([agent.name, other.name]);
       campfireMessages = [];
+      campfireSessionId = null;
       showCampfire();
     });
     inviteGrid.appendChild(btn);
@@ -3012,6 +3890,7 @@ function showProfile(agent, options = {}) {
     // Update bubble with richer data
     if (data.bubble && data.bubble !== agent.bubble) {
       document.getElementById("profile-bubble-text").textContent = data.bubble;
+      setProfileStatusInfo(data.bubble);
     }
   });
 
@@ -3114,12 +3993,7 @@ function handleKeyDown(e) {
     }
     if (e.key === "Enter") {
       e.preventDefault();
-      modelPickerSelect();
-      return;
-    }
-    if (e.key === "r" || e.key === "R") {
-      e.preventDefault();
-      modelPickerReset();
+      modelPickerSave();
       return;
     }
     e.preventDefault();
@@ -3140,6 +4014,23 @@ function handleKeyDown(e) {
     }
   }
 
+  if (settingsMenuOpen) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      toggleSettingsMenu(false);
+      return;
+    }
+    const settingsRoot = document.getElementById("settings-menu");
+    const active = document.activeElement;
+    if (settingsRoot && active instanceof Node && settingsRoot.contains(active)) {
+      return;
+    }
+    if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      return;
+    }
+  }
+
   if (view === "grid" && (e.key === "l" || e.key === "L")) {
     const active = document.activeElement;
     const inEditable = Boolean(
@@ -3149,6 +4040,25 @@ function handleKeyDown(e) {
     if (!inEditable) {
       e.preventDefault();
       setEventLogCollapsed(!eventLogCollapsed);
+      return;
+    }
+  }
+
+  if (view === "grid" && e.key === "/") {
+    const active = document.activeElement;
+    const inEditable = Boolean(
+      active &&
+      (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.isContentEditable)
+    );
+    if (!inEditable) {
+      e.preventDefault();
+      if (eventLogCollapsed) setEventLogCollapsed(false);
+      if (!eventLogToolsOpen) setEventLogToolsOpen(true);
+      const searchInput = document.getElementById("event-log-search");
+      if (searchInput) {
+        searchInput.focus();
+        searchInput.select();
+      }
       return;
     }
   }
@@ -3210,6 +4120,7 @@ function handleKeyDown(e) {
       if (name) {
         campfireSelected = new Set([name]);
         campfireMessages = [];
+      campfireSessionId = null;
       }
       showCampfire();
       return;
@@ -3337,6 +4248,7 @@ function handleKeyDown(e) {
       hideProfile();
       campfireSelected = new Set([name]);
       campfireMessages = [];
+      campfireSessionId = null;
       showCampfire();
       return;
     }
@@ -3359,33 +4271,33 @@ function handleKeyDown(e) {
   }
 
   // Aquarium view
-  const maxIndex = agents.length - 1;
+  const sortedVisibleAgents = getDepthSortedAgents();
+  const visibleCount = sortedVisibleAgents.length;
+  const currentVisibleIndex = sortedVisibleAgents.findIndex((entry) => entry.originalIndex === selectedIndex);
+  const safeVisibleIndex = currentVisibleIndex === -1 ? 0 : currentVisibleIndex;
+  if (visibleCount > 0 && currentVisibleIndex === -1) {
+    selectedIndex = sortedVisibleAgents[0].originalIndex;
+  }
 
   switch (e.key) {
     case "ArrowLeft":
     case "ArrowUp":
       e.preventDefault();
-      if (selectedIndex > 0) selectedIndex--;
-      else selectedIndex = maxIndex;
+      if (visibleCount === 0) break;
+      selectedIndex =
+        sortedVisibleAgents[(safeVisibleIndex - 1 + visibleCount) % visibleCount].originalIndex;
       break;
     case "ArrowRight":
     case "ArrowDown":
       e.preventDefault();
-      if (selectedIndex < maxIndex) selectedIndex++;
-      else selectedIndex = 0;
+      if (visibleCount === 0) break;
+      selectedIndex =
+        sortedVisibleAgents[(safeVisibleIndex + 1) % visibleCount].originalIndex;
       break;
     case "Enter":
       e.preventDefault();
-      // Need to find the agent from the sorted list since selectedIndex tracks the visual order
-      const _sortedAgents = getDepthSortedAgents();
-      
-      const selected = _sortedAgents.find(sa => sa.originalIndex === selectedIndex);
-      if (selected && selected.agent) {
-        showProfile(selected.agent);
-      } else if (agents[selectedIndex]) {
-        // Fallback
-        showProfile(agents[selectedIndex]);
-      }
+      if (visibleCount === 0) break;
+      showProfile(sortedVisibleAgents[safeVisibleIndex].agent);
       break;
     case " ":
       e.preventDefault();
@@ -3407,6 +4319,12 @@ function pollGamepad() {
   }
 
   const justPressed = (idx) => buttons[idx] && !gamepadPrevButtons[idx];
+
+  if (settingsMenuOpen) {
+    if (justPressed(1) || justPressed(8)) toggleSettingsMenu(false);
+    gamepadPrevButtons = { ...buttons };
+    return;
+  }
 
   if (view === "campfire") {
     if (justPressed(1) || justPressed(8)) hideCampfire();
@@ -3437,6 +4355,7 @@ function pollGamepad() {
       hideProfile();
       campfireSelected = new Set([name]);
       campfireMessages = [];
+      campfireSessionId = null;
       showCampfire();
     }
 
@@ -3523,16 +4442,23 @@ function escapeHtml(str) {
 
 function updateStatusBar() {
   const info = document.getElementById("status-info");
+  if (!info) return;
   if (agents.length === 0) {
     info.textContent = "loading...";
     return;
   }
-  const selected = agents[selectedIndex];
-  if (selected) {
-    const working = agents.filter((a) => a.state === "working").length;
-    const stateStr = working > 0 ? `${working} running` : "idle";
-    info.textContent = `${selectedIndex + 1}/${agents.length} ${selected.type} \u00B7 ${stateStr}`;
+  const visibleSorted = getDepthSortedAgents();
+  if (visibleSorted.length === 0) {
+    info.textContent = "all agents hidden";
+    return;
   }
+  const selectedOffset = visibleSorted.findIndex((entry) => entry.originalIndex === selectedIndex);
+  const selectedSlot = selectedOffset === -1 ? 0 : selectedOffset;
+  const selected = visibleSorted[selectedSlot]?.agent;
+  if (!selected) return;
+  const working = getVisibleAgents().filter((agent) => agent.state === "working").length;
+  const stateStr = working > 0 ? `${working} running` : "idle";
+  info.textContent = `${selectedSlot + 1}/${visibleSorted.length} ${selected.type} \u00B7 ${stateStr}`;
 }
 
 // ---- Profile Sprite Animation ----
@@ -3561,19 +4487,35 @@ function animateProfileSprite(timestamp) {
   pctx.drawImage(sprite, 0, Math.floor(yOff), 128, 128);
 
   const modelMeta = agentModelInfo[profileAgent.name];
-  if (modelMeta?.isOverride && modelMeta.label) {
+  if (modelMeta?.modelId) {
+    const iconImage = getModelIconImage(modelMeta);
+    if (!iconImage && !modelMeta.label) return;
+
+    const iconSize = 36;
+    const orbitRadius = 4;
+    const orbitX = 86 + Math.cos(timestamp * 0.0018) * orbitRadius;
+    const orbitY = 28 + Math.sin(timestamp * 0.0026) * (orbitRadius * 0.55);
+    const x = Math.floor(orbitX - iconSize / 2);
+    const y = Math.floor(orbitY - iconSize / 2);
+
     pctx.save();
-    pctx.font = "10px 'JetBrains Mono', monospace";
-    pctx.textAlign = "left";
-    pctx.textBaseline = "top";
-    const w = Math.ceil(pctx.measureText(modelMeta.label).width) + 8;
-    const h = 13;
-    const x = 128 - w - 4;
-    const y = 4;
-    pctx.fillStyle = "rgba(8, 12, 20, 0.9)";
-    pctx.fillRect(x, y, w, h);
-    pctx.fillStyle = "#b5ccff";
-    pctx.fillText(modelMeta.label, x + 4, y + 2);
+    pctx.imageSmoothingEnabled = false;
+    pctx.globalAlpha = 0.96;
+
+    if (iconImage) {
+      pctx.drawImage(iconImage, x, y, iconSize, iconSize);
+    } else if (modelMeta.label) {
+      pctx.font = "12px 'Departure Mono', monospace";
+      pctx.textAlign = "left";
+      pctx.textBaseline = "top";
+      pctx.shadowColor = "rgba(0, 0, 0, 0.6)";
+      pctx.shadowBlur = 0;
+      pctx.shadowOffsetX = 1;
+      pctx.shadowOffsetY = 1;
+      pctx.fillStyle = "#b5ccff";
+      pctx.fillText(modelMeta.label.slice(0, 6), x + 3, y + 11);
+    }
+
     pctx.restore();
   }
 }
@@ -3659,7 +4601,7 @@ function modelPickerNav(dir) {
   updateModelPickerDisplay();
 }
 
-async function modelPickerSelect() {
+async function modelPickerSave() {
   const model = MODEL_REGISTRY[modelPickerIndex];
   if (!model || !modelPickerAgent) return;
 
@@ -3681,53 +4623,28 @@ async function modelPickerSelect() {
         dedupeKey: `model-set:${modelPickerAgent}:${info.model}`,
         cooldownMs: 800,
       });
+      triggerHapticFeedback([16, 22, 12]);
+      closeModelPicker();
     }
   } catch (err) {
-    console.error("[model-picker] select failed:", err);
-  }
-}
-
-async function modelPickerReset() {
-  if (!modelPickerAgent) return;
-
-  try {
-    const res = await fetch(`/api/agent/${modelPickerAgent}/model`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ reset: true }),
-    });
-    if (res.ok) {
-      const info = await res.json();
-      setAgentModelInfo(modelPickerAgent, info);
-      agentModelFetchState[modelPickerAgent] = "loaded";
-      modelPickerCurrentModel = info.model;
-      const idx = MODEL_REGISTRY.findIndex((m) => m.modelId === info.model);
-      if (idx >= 0) modelPickerIndex = idx;
-      updateModelPickerDisplay();
-      logAgentEvent(`${modelPickerAgent} model reset`, {
-        agentName: modelPickerAgent,
-        kind: "state",
-        dedupeKey: `model-reset:${modelPickerAgent}:${info.model}`,
-        cooldownMs: 800,
-      });
-    }
-  } catch (err) {
-    console.error("[model-picker] reset failed:", err);
+    console.error("[model-picker] save failed:", err);
   }
 }
 
 function initModelPicker() {
   document.getElementById("model-picker-prev").addEventListener("click", () => modelPickerNav(-1));
   document.getElementById("model-picker-next").addEventListener("click", () => modelPickerNav(1));
-  document.getElementById("model-picker-select").addEventListener("click", () => modelPickerSelect());
-  document.getElementById("model-picker-reset").addEventListener("click", () => modelPickerReset());
-  document.getElementById("model-picker-close").addEventListener("click", () => closeModelPicker());
+  document.getElementById("model-picker-save").addEventListener("click", () => modelPickerSave());
+  document.getElementById("model-picker-cancel").addEventListener("click", () => closeModelPicker());
 }
 
 // ---- Main Loop ----
 
 async function init() {
   resize();
+  loadUiSettings();
+  loadTraceHistory();
+  applyCampfireLabelToUi(true);
   window.addEventListener("resize", resize);
   document.addEventListener("keydown", handleKeyDown);
   canvas.addEventListener("click", handleCanvasClick);
@@ -3737,9 +4654,11 @@ async function init() {
   });
   exposeWorldControls();
   initWorldMenu();
+  initSettingsMenu();
   initAgentMenu();
   initAgentProfileWindow();
   initModelPicker();
+  primeModelIcons();
 
   const traceToggleBtn = document.getElementById("trace-toggle");
   if (traceToggleBtn) {
@@ -3754,6 +4673,78 @@ async function init() {
       event.stopPropagation();
       setEventLogCollapsed(!eventLogCollapsed);
     });
+  }
+  const eventLogToolsToggleBtn = document.getElementById("event-log-tools-toggle");
+  if (eventLogToolsToggleBtn) {
+    eventLogToolsToggleBtn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const next = !eventLogToolsOpen;
+      setEventLogToolsOpen(next);
+      if (next) {
+        const searchInput = document.getElementById("event-log-search");
+        if (searchInput) {
+          searchInput.focus();
+          searchInput.select();
+        }
+      }
+    });
+  }
+  const eventLogSearchInput = document.getElementById("event-log-search");
+  if (eventLogSearchInput) {
+    eventLogSearchInput.addEventListener("input", () => {
+      eventLogSearchQuery = eventLogSearchInput.value || "";
+      queueEventSearch(false);
+    });
+    eventLogSearchInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        eventLogSearchQuery = eventLogSearchInput.value || "";
+        queueEventSearch(true);
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        clearEventSearch();
+        eventLogSearchInput.blur();
+      }
+    });
+  }
+  const eventLogKindSelect = document.getElementById("event-log-kind");
+  if (eventLogKindSelect) {
+    eventLogKindSelect.addEventListener("change", () => {
+      eventLogSearchKind = eventLogKindSelect.value || "all";
+      eventLogLastMarkup = "";
+      if (isEventSearchMode()) {
+        queueEventSearch(true);
+      } else {
+        renderEventLog();
+      }
+    });
+  }
+  const eventLogSemanticBtn = document.getElementById("event-log-semantic");
+  if (eventLogSemanticBtn) {
+    eventLogSemanticBtn.addEventListener("click", (event) => {
+      event.preventDefault();
+      eventLogSearchSemantic = !eventLogSearchSemantic;
+      eventLogLastMarkup = "";
+      if (isEventSearchMode()) {
+        queueEventSearch(true);
+      } else {
+        renderEventLog();
+      }
+    });
+  }
+  const eventLogLiveBtn = document.getElementById("event-log-live");
+  if (eventLogLiveBtn) {
+    eventLogLiveBtn.addEventListener("click", (event) => {
+      event.preventDefault();
+      clearEventSearch();
+    });
+  }
+  const eventLogEntriesEl = document.getElementById("event-log-entries");
+  if (eventLogEntriesEl) {
+    eventLogEntriesEl.addEventListener("click", handleEventLogClick);
   }
   setTracePanelVisible(true);
   await loadPersistedEvents();
@@ -3827,8 +4818,9 @@ async function init() {
     sendCampfire(input.value);
   });
   document.getElementById("campfire-all").addEventListener("click", () => {
-    agents.forEach((a) => campfireSelected.add(a.name));
-    document.querySelectorAll(".campfire-agent-btn").forEach((b) => b.classList.add("selected"));
+    campfireSelected.clear();
+    getVisibleAgents().forEach((agent) => campfireSelected.add(agent.name));
+    document.querySelectorAll(".campfire-agent-btn").forEach((button) => button.classList.add("selected"));
     updateCampfireSession();
   });
   document.getElementById("campfire-none").addEventListener("click", () => {
@@ -3856,7 +4848,7 @@ function loop(timestamp) {
   const delta = lastTimestamp ? timestamp - lastTimestamp : 16;
   lastTimestamp = timestamp;
   syncEventLogVisibility();
-  if (timestamp - eventLogLastRepaint > EVENT_LOG_REPAINT_MS) {
+  if (timestamp - eventLogLastRepaint > EVENT_LOG_REPAINT_MS && shouldAutoRepaintEventLog()) {
     eventLogLastRepaint = timestamp;
     renderEventLog();
   }

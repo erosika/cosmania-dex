@@ -140,15 +140,17 @@ export interface AgentContext {
   peerCard: string | null;
   alignment: string[];
   recentContext: string | null;
+  crossAgentBriefing: string | null;
 }
 
 /**
  * Load Honcho identity context for an agent.
  *
- * Three layers:
+ * Four layers:
  *   1. Peer card (eri's curated identity -- stable foundation)
  *   2. Dialectic alignment (synthesized from ALL conclusions)
  *   3. Recent context (semantic search, role-scoped)
+ *   4. Cross-agent briefing (what's happening across the DEX)
  */
 export async function loadAgentContext(agentName: string): Promise<AgentContext> {
   const honcho = getHoncho();
@@ -253,7 +255,15 @@ export async function loadAgentContext(agentName: string): Promise<AgentContext>
     }
   }
 
-  return { peerCard, alignment, recentContext };
+  // Layer 4: Cross-agent briefing (what's happening across the DEX)
+  let crossAgentBriefing: string | null = null;
+  try {
+    crossAgentBriefing = await loadCrossAgentBriefing(agentName);
+  } catch {
+    // Non-critical
+  }
+
+  return { peerCard, alignment, recentContext, crossAgentBriefing };
 }
 
 /**
@@ -279,6 +289,13 @@ export function formatContextForPrompt(ctx: AgentContext): string {
   if (ctx.recentContext) {
     parts.push("## Recent Context");
     parts.push(ctx.recentContext);
+    parts.push("");
+  }
+
+  if (ctx.crossAgentBriefing) {
+    parts.push("## DEX Activity");
+    parts.push("Recent conversations and activity across all agents in the DEX (not just your own):");
+    parts.push(ctx.crossAgentBriefing);
     parts.push("");
   }
 
@@ -335,6 +352,7 @@ export async function recordExchange(
   agentName: string,
   userMessage: string,
   agentResponse: string,
+  toolCalls?: Array<{ id: string; name: string; args: Record<string, any>; result: { success: boolean; data: any; error?: string }; durationMs: number }>,
 ): Promise<void> {
   const honcho = getHoncho();
   const eriPeer = await honcho.peer(MAIN_PEER);
@@ -343,28 +361,38 @@ export async function recordExchange(
   });
   const session = await getSession([agentName]);
 
+  const agentMeta: Record<string, any> = { channel: "dex-chat", source: agentName };
+  if (toolCalls && toolCalls.length > 0) {
+    agentMeta.toolCalls = toolCalls;
+  }
+
   await session.addMessages([
     eriPeer.message(userMessage, {
       metadata: { channel: "dex-chat", target: agentName },
     }),
     agentPeer.message(agentResponse, {
-      metadata: { channel: "dex-chat", source: agentName },
+      metadata: agentMeta,
     }),
   ]);
 }
 
 /**
  * Record a message in a group session.
- * Session key is derived from the full participant list.
  *
- * @param participants - all agents in this group (determines session)
+ * If a sessionId is provided, messages go to that session (allows
+ * adding/removing peers without losing context). Otherwise, a new
+ * session key is derived from the participant list.
+ *
+ * @param participants - agents currently in this group (stored in metadata)
  * @param speakerName - who said this message ("eri" or an agent name)
  * @param content - message content
+ * @param sessionId - explicit session ID to continue (optional)
  */
 export async function recordGroupMessage(
   participants: string[],
   speakerName: string,
   content: string,
+  sessionId?: string,
 ): Promise<void> {
   const honcho = getHoncho();
   const speaker = await honcho.peer(speakerName, {
@@ -372,7 +400,9 @@ export async function recordGroupMessage(
       ? {}
       : { type: "cosmania-agent", source: "dex" },
   });
-  const session = await getSession(participants);
+  const session = sessionId
+    ? await honcho.session(sessionId)
+    : await getSession(participants);
 
   await session.addMessages([
     speaker.message(content, {
@@ -432,6 +462,40 @@ export async function searchHonchoMemory(
   }
 
   return null;
+}
+
+/**
+ * Load a cross-agent briefing for context awareness.
+ *
+ * Each agent operates in its own 1:1 session with eri, but eri's conversations
+ * with OTHER agents often carry context that's relevant. This function pulls a
+ * representation from the cosmania-dex workspace that spans ALL sessions,
+ * giving the agent awareness of what's happening across the DEX.
+ *
+ * Returns null if nothing meaningful is found or Honcho is disabled.
+ */
+export async function loadCrossAgentBriefing(
+  currentAgent: string,
+): Promise<string | null> {
+  if (!_initialized) return null;
+
+  try {
+    const honcho = getHoncho();
+    const eriPeer = await honcho.peer(MAIN_PEER);
+
+    const briefing = await eriPeer.representation({
+      searchQuery: "recent agent conversations activities context across all agents",
+      searchTopK: 10,
+      includeMostFrequent: true,
+      maxConclusions: 10,
+    });
+
+    if (!briefing || briefing.length === 0) return null;
+
+    return briefing;
+  } catch {
+    return null;
+  }
 }
 
 /**

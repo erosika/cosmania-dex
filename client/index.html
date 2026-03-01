@@ -5,9 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
   <title>COSMANIA DEX</title>
   <link rel="stylesheet" href="style.css">
-  <style>
-    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;700&family=Space+Mono:wght@400;700&display=swap');
-  </style>
 </head>
 <body>
 
@@ -34,12 +31,21 @@
 <aside id="event-log-panel" hidden>
   <div class="event-log-header">
     <span class="event-log-title">AGENT EVENTS</span>
-    <button
-      id="event-log-toggle"
-      type="button"
-      aria-expanded="true"
-      aria-label="Collapse event log"
-    >&lt;</button>
+    <div class="event-log-header-actions">
+      <button
+        id="event-log-tools-toggle"
+        type="button"
+        aria-pressed="false"
+        aria-label="Toggle activity log tools"
+        title="Toggle search/filter tools"
+      >&#9881;</button>
+      <button
+        id="event-log-toggle"
+        type="button"
+        aria-expanded="true"
+        aria-label="Collapse event log"
+      >&lt;</button>
+    </div>
   </div>
   <div id="event-log-controls">
     <input
@@ -65,14 +71,16 @@
 
 <div id="agent-menu" hidden>
   <div class="agent-menu-header">
-    <span class="agent-menu-label">AGENT</span>
     <span class="agent-menu-name" id="agent-menu-name"></span>
+    <button id="agent-menu-close" class="agent-menu-close" type="button" aria-label="Close agent menu">&times;</button>
   </div>
-  <div class="agent-menu-body" id="agent-menu-body">menu content coming soon...</div>
-  <div class="agent-menu-actions">
-    <button id="agent-menu-profile" type="button">PROFILE</button>
-    <button id="agent-menu-close" type="button">CLOSE</button>
-  </div>
+  <button id="agent-menu-profile" class="agent-menu-profile-card" type="button" aria-label="Open agent profile">
+    <span class="agent-menu-body" id="agent-menu-body">menu content coming soon...</span>
+  </button>
+  <button id="agent-menu-model" class="agent-menu-model" type="button" aria-label="Open model picker">
+    <img id="agent-menu-model-icon" class="agent-menu-model-icon" width="16" height="16" alt="" hidden />
+    <span id="agent-menu-model-name" class="agent-menu-model-name">model ...</span>
+  </button>
 </div>
 
 <div id="agent-profile-window" hidden>
@@ -127,6 +135,7 @@
     <div id="profile-info">
       <h1 id="profile-name"></h1>
       <div class="tagline" id="profile-tagline"></div>
+      <div id="profile-status-info" hidden></div>
       <div style="margin-top: 6px;">
         <span class="type-badge" id="profile-type-badge"></span>
         <span class="state-dot" id="profile-state-dot" style="margin-left: 8px;"></span>
@@ -179,13 +188,13 @@
     <span class="control-hint"><kbd>T</kbd> trace</span>
     <span class="control-hint"><kbd>Enter</kbd> send</span>
     <span class="control-hint"><kbd>M</kbd> model</span>
-    <span class="control-hint"><kbd>Space</kbd> campfire</span>
+    <span class="control-hint"><kbd>Space</kbd> <span id="profile-campfire-hint-label">campfire</span></span>
   </div>
 </div>
 
 <div id="campfire-panel">
   <div id="campfire-header">
-    <span class="campfire-title">CAMPFIRE</span>
+    <span class="campfire-title" id="campfire-title">CAMPFIRE</span>
     <span class="campfire-session" id="campfire-session"></span>
   </div>
   <div id="campfire-select">
@@ -224,9 +233,8 @@
   </div>
   <div class="model-picker-dots" id="model-picker-dots"></div>
   <div class="model-picker-actions">
-    <button id="model-picker-select" type="button">SELECT</button>
-    <button id="model-picker-reset" type="button">RESET</button>
-    <button id="model-picker-close" type="button">CLOSE</button>
+    <button id="model-picker-save" type="button">SAVE</button>
+    <button id="model-picker-cancel" type="button">CANCEL</button>
   </div>
 </div>
 
@@ -242,6 +250,30 @@
       <button id="world-layout-reset" type="button">RESET</button>
     </div>
     <div id="world-layout-status"></div>
+  </div>
+</div>
+
+<div id="settings-menu" aria-label="ui settings menu">
+  <button id="settings-menu-toggle" type="button" aria-expanded="false" aria-controls="settings-menu-panel">S</button>
+  <div id="settings-menu-panel" hidden>
+    <div class="settings-menu-title">UI SETTINGS</div>
+    <label class="settings-field" for="settings-campfire-name">
+      <span class="settings-section-label">campfire label</span>
+      <input
+        id="settings-campfire-name"
+        type="text"
+        maxlength="30"
+        autocomplete="off"
+        placeholder="Campfire"
+        aria-label="Rename campfire"
+      />
+    </label>
+    <div class="settings-section-label">visible agents</div>
+    <div id="settings-agent-list"></div>
+    <div class="settings-menu-actions">
+      <button id="settings-enable-all" type="button">ALL ON</button>
+      <button id="settings-disable-all" type="button">ALL OFF</button>
+    </div>
   </div>
 </div>
 

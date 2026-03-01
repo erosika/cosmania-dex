@@ -317,7 +317,7 @@ function semanticScore(
       continue;
     }
     // Fuzzy-ish fallback for prefix matches (semantic-ish for short forms).
-    for (const textToken of textTokens) {
+    for (const textToken of Array.from(textTokens)) {
       if (textToken.startsWith(token) || token.startsWith(textToken)) {
         score += 0.5;
         break;
