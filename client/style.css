@@ -520,7 +520,7 @@ canvas {
 
 .event-log-entry {
   display: grid;
-  grid-template-columns: auto 1fr;
+  grid-template-columns: auto minmax(0, 1fr);
   gap: 9px;
   align-items: start;
   min-height: 18px;
@@ -556,9 +556,14 @@ canvas {
 
 .event-log-text {
   font-family: var(--font-mono);
+  display: block;
+  min-width: 0;
   font-size: 12px;
   line-height: 1.5;
   color: color-mix(in srgb, var(--kyogre-panel-text) 95%, white);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   text-shadow: 0 1px 0 rgba(0, 0, 0, 0.5);
 }
 
@@ -4019,16 +4024,15 @@ button.agent-profile-window-dot.close:hover {
   background: #fff;
 }
 
-/* ---- Group Session Compact Layout ---- */
+/* ---- Lobby Full View Layout ---- */
 
 #campfire-panel {
-  inset: auto;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  width: min(1040px, calc(100vw - 24px));
-  height: min(78vh, 760px);
-  max-height: calc(100vh - 24px);
+  inset: 0;
+  transform: none;
+  width: 100vw;
+  height: 100vh;
+  max-height: 100vh;
+  border-radius: 0;
   overflow: hidden;
 }
 
@@ -4038,22 +4042,98 @@ button.agent-profile-window-dot.close:hover {
   display: flex;
 }
 
-#campfire-messages {
-  flex: 1;
-  min-width: 0;
-  min-height: 0;
-}
-
-#campfire-trace-panel {
-  width: min(360px, 38%);
-  min-width: 240px;
+#campfire-side-panel {
+  flex: 0 0 min(390px, 38vw);
+  min-width: 300px;
   display: flex;
   flex-direction: column;
-  border-left: 1px solid color-mix(in srgb, var(--kyogre-panel-border, var(--bg-elevated)) 70%, transparent);
+  border-right: 1px solid color-mix(in srgb, var(--kyogre-panel-border, var(--bg-elevated)) 70%, transparent);
   background: color-mix(in srgb, var(--kyogre-ui-shell, var(--bg-surface)) 88%, var(--bg));
 }
 
-#campfire-trace-panel .panel-header {
+#campfire-chat-panel {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: color-mix(in srgb, var(--kyogre-ui-shell, var(--bg-surface)) 84%, var(--bg));
+}
+
+#campfire-select {
+  padding: 10px 12px;
+  max-height: 36vh;
+  overflow-y: auto;
+}
+
+#campfire-params {
+  padding: 8px 12px 10px;
+  border-top: 1px solid color-mix(in srgb, var(--kyogre-panel-border, var(--bg-elevated)) 68%, transparent);
+}
+
+.campfire-param-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.campfire-param-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.campfire-param-field span {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+.campfire-param-field input[type="number"],
+.campfire-param-field input[type="text"] {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--bg-elevated);
+  color: var(--fg-bright);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 4px 6px;
+  outline: none;
+}
+
+.campfire-param-field input[type="number"]:focus,
+.campfire-param-field input[type="text"]:focus {
+  border-color: var(--accent);
+}
+
+.campfire-param-field.toggle {
+  align-items: flex-start;
+  justify-content: flex-end;
+}
+
+.campfire-param-field.toggle input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent);
+}
+
+.campfire-param-field.session {
+  grid-column: 1 / -1;
+}
+
+#campfire-trace-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid color-mix(in srgb, var(--kyogre-panel-border, var(--bg-elevated)) 70%, transparent);
+  background: color-mix(in srgb, var(--kyogre-ui-shell, var(--bg-surface)) 92%, transparent);
+}
+
+#campfire-trace-panel .panel-header,
+#campfire-chat-panel .panel-header {
   height: 30px;
   padding: 0 10px;
   display: flex;
@@ -4143,23 +4223,59 @@ button.agent-profile-window-dot.close:hover {
   opacity: 0.9;
 }
 
-@media (max-width: 920px) {
-  #campfire-panel {
-    width: calc(100vw - 12px);
-    height: calc(100vh - 12px);
-    max-height: calc(100vh - 12px);
-  }
+#campfire-messages {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 12px;
+  background:
+    repeating-linear-gradient(
+      45deg,
+      var(--pixel-dither-a) 0 2px,
+      var(--pixel-dither-b) 2px 4px
+    ),
+    color-mix(in srgb, var(--kyogre-ui-shell, var(--bg)) 90%, black);
+}
 
+#campfire-chat-panel .campfire-msg {
+  gap: 10px;
+  padding: 2px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--kyogre-panel-border, var(--bg-elevated)) 42%, transparent);
+}
+
+#campfire-chat-panel .campfire-msg:last-child {
+  border-bottom: none;
+}
+
+#campfire-chat-panel .campfire-msg .msg-body {
+  background: transparent;
+  border-radius: 0;
+  padding: 0;
+  line-height: 1.42;
+}
+
+#campfire-input-wrap {
+  border-top: 1px solid color-mix(in srgb, var(--kyogre-panel-border, var(--bg-elevated)) 70%, transparent);
+  padding: 7px 10px;
+  gap: 6px;
+}
+
+@media (max-width: 980px) {
   #campfire-workspace {
     flex-direction: column;
   }
 
-  #campfire-trace-panel {
+  #campfire-side-panel {
+    flex: 0 0 auto;
     width: 100%;
     min-width: 0;
-    max-height: 40%;
-    border-left: none;
-    border-top: 1px solid color-mix(in srgb, var(--kyogre-panel-border, var(--bg-elevated)) 70%, transparent);
+    max-height: 45vh;
+    border-right: none;
+    border-bottom: 1px solid color-mix(in srgb, var(--kyogre-panel-border, var(--bg-elevated)) 70%, transparent);
+  }
+
+  #campfire-chat-panel {
+    min-height: 42vh;
   }
 }
 

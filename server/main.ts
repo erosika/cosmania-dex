@@ -655,6 +655,7 @@ function serveStatic(pathname: string): Response {
 
 Bun.serve({
   port: PORT,
+  idleTimeout: 255,
   async fetch(req) {
     const url = new URL(req.url);
     const { pathname } = url;
@@ -1286,10 +1287,14 @@ Bun.serve({
           },
         );
         const normalizedUserMessage = typeof body.message === "string" ? body.message.trim() : "";
-        if (normalizedUserMessage) {
-          session.history.push({ agent: "eri", message: normalizedUserMessage });
-        }
-        const records = appendGroupSessionMessages(
+        const userRecords = normalizedUserMessage
+          ? appendGroupSessionMessages(
+            session,
+            [{ agent: "eri", message: normalizedUserMessage }],
+            "manual",
+          )
+          : [];
+        const agentRecords = appendGroupSessionMessages(
           session,
           result.messages.map((line) => ({
             agent: line.agent,
@@ -1298,6 +1303,7 @@ Bun.serve({
           })),
           "manual",
         );
+        const records = userRecords.concat(agentRecords);
         trimGroupSessionState(session);
         const repliesThisTurn = result.messages.filter((line) => line.agent !== "system").length;
         if (session.participants.length > 0 && repliesThisTurn > 0) {

@@ -224,37 +224,65 @@
     <span class="control-hint"><kbd>T</kbd> trace</span>
     <span class="control-hint"><kbd>Enter</kbd> send</span>
     <span class="control-hint"><kbd>M</kbd> model</span>
-    <span class="control-hint"><kbd>Space</kbd> <span id="profile-campfire-hint-label">session</span></span>
+    <span class="control-hint"><kbd>Space</kbd> <span id="profile-campfire-hint-label">lobby</span></span>
   </div>
 </div>
 
 <div id="campfire-panel">
   <div id="campfire-header">
-    <span class="campfire-title" id="campfire-title">GROUP SESSION</span>
+    <span class="campfire-title" id="campfire-title">LOBBY</span>
     <span class="campfire-session" id="campfire-session"></span>
   </div>
-  <div id="campfire-select">
-    <div class="campfire-select-label">select agents</div>
-    <div id="campfire-agent-grid"></div>
-    <div id="campfire-actions">
-      <button id="campfire-all">ALL</button>
-      <button id="campfire-none">NONE</button>
-    </div>
-  </div>
   <div id="campfire-workspace">
-    <div id="campfire-messages"></div>
-    <div id="campfire-trace-panel">
-      <div class="panel-header">
-        <span class="panel-label">TRACE</span>
-        <span class="trace-status" id="campfire-trace-status"></span>
+    <div id="campfire-side-panel">
+      <div id="campfire-select">
+        <div class="campfire-select-label">select agents</div>
+        <div id="campfire-agent-grid"></div>
+        <div id="campfire-actions">
+          <button id="campfire-all">ALL</button>
+          <button id="campfire-none">NONE</button>
+        </div>
       </div>
-      <div id="campfire-trace-entries"></div>
+      <div id="campfire-params">
+        <div class="campfire-select-label">lobby params</div>
+        <div class="campfire-param-grid">
+          <label class="campfire-param-field" for="lobby-param-rounds">
+            <span>rounds</span>
+            <input id="lobby-param-rounds" type="number" min="1" max="3" step="1" value="1" />
+          </label>
+          <label class="campfire-param-field" for="lobby-param-immediate">
+            <span>immediate replies</span>
+            <input id="lobby-param-immediate" type="number" min="1" max="4" step="1" value="1" />
+          </label>
+          <label class="campfire-param-field toggle" for="lobby-param-autonomy">
+            <span>autonomy</span>
+            <input id="lobby-param-autonomy" type="checkbox" checked />
+          </label>
+          <label class="campfire-param-field session" for="lobby-param-session">
+            <span>session id</span>
+            <input id="lobby-param-session" type="text" maxlength="80" autocomplete="off" placeholder="auto" />
+          </label>
+        </div>
+      </div>
+      <div id="campfire-trace-panel">
+        <div class="panel-header">
+          <span class="panel-label">TRACE</span>
+          <span class="trace-status" id="campfire-trace-status"></span>
+        </div>
+        <div id="campfire-trace-entries"></div>
+      </div>
     </div>
-  </div>
-  <div id="campfire-input-wrap">
-    <span class="chat-caret">&gt;</span>
-    <input id="campfire-input" type="text" placeholder="say something to the group..." autocomplete="off" />
-    <button id="campfire-send">SEND</button>
+    <div id="campfire-chat-panel">
+      <div class="panel-header">
+        <span class="panel-label">LOBBY MESSAGES</span>
+      </div>
+      <div id="campfire-messages"></div>
+      <div id="campfire-input-wrap">
+        <span class="chat-caret">&gt;</span>
+        <input id="campfire-input" type="text" placeholder="say something to the lobby..." autocomplete="off" />
+        <button id="campfire-send">SEND</button>
+      </div>
+    </div>
   </div>
   <div id="campfire-controls">
     <span class="control-hint"><kbd>Esc</kbd> back</span>
@@ -303,14 +331,14 @@
   <div id="settings-menu-panel" hidden>
     <div class="settings-menu-title">UI SETTINGS</div>
     <label class="settings-field" for="settings-campfire-name">
-      <span class="settings-section-label">session label</span>
+      <span class="settings-section-label">lobby label</span>
       <input
         id="settings-campfire-name"
         type="text"
         maxlength="30"
         autocomplete="off"
-        placeholder="Session"
-        aria-label="Rename session"
+        placeholder="Lobby"
+        aria-label="Rename lobby"
       />
     </label>
     <div class="settings-section-label">visible agents</div>

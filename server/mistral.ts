@@ -855,7 +855,7 @@ Describe what you see with precision. The personalitySignals field should read l
       const res = await fetch(`${COSMANIA_URL}/dex/photo/publish`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        signal: AbortSignal.timeout(30000),
+        signal: AbortSignal.timeout(120000),
       });
       if (!res.ok) {
         return { success: false, data: null, error: `Cosmania upstream ${res.status}` };

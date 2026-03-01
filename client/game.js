@@ -54,6 +54,7 @@ const EVENT_LOG_REPAINT_MS = 280;
 const EVENT_LOG_SCROLL_TOP_STICKY_PX = 10;
 const EVENT_LOG_SEARCH_LIMIT = 260;
 const EVENT_LOG_SEARCH_DEBOUNCE_MS = 220;
+const EVENT_LOG_MESSAGE_MAX_CHARS = 96;
 const CHAT_INPUT_DEFAULT_PLACEHOLDER = "talk to this agent...";
 const EVENT_UPLOAD_BATCH_MS = 1200;
 const EVENT_UPLOAD_MAX_BATCH = 36;
@@ -75,7 +76,13 @@ const MOVE_FACING_DEADZONE = 0.003;
 const WALK_ARRIVE_RADIUS = 7;
 const WALK_SLOW_RADIUS = 28;
 const SETTINGS_STORAGE_KEY = "cosmania-dex:ui-settings:v1";
-const DEFAULT_CAMPFIRE_LABEL = "Session";
+const DEFAULT_CAMPFIRE_LABEL = "Lobby";
+const DEFAULT_LOBBY_PARAMS = Object.freeze({
+  rounds: 1,
+  immediateReplies: 1,
+  autonomy: true,
+  sessionId: "",
+});
 
 
 const TYPE_COLORS = {
@@ -253,6 +260,12 @@ let eventServerSeenKeys = new Set();
 let hiddenAgentNames = new Set(); // lower-case agent names hidden from UI
 let settingsMenuOpen = false;
 let campfireLabel = DEFAULT_CAMPFIRE_LABEL;
+let campfireUiParams = {
+  rounds: DEFAULT_LOBBY_PARAMS.rounds,
+  immediateReplies: DEFAULT_LOBBY_PARAMS.immediateReplies,
+  autonomy: DEFAULT_LOBBY_PARAMS.autonomy,
+  sessionId: DEFAULT_LOBBY_PARAMS.sessionId,
+};
 
 const MODEL_REGISTRY = [
   // -- Generalist (tool use) --
@@ -516,8 +529,8 @@ function toDialogEventText(entry) {
   if (/unreachable/i.test(raw)) {
     return "report failed: unreachable";
   }
-  if (/(campfire|session) error:/i.test(raw)) {
-    return raw.replace(/(?:campfire|session) error:/i, "report failed:").trim();
+  if (/(campfire|session|lobby) error:/i.test(raw)) {
+    return raw.replace(/(?:campfire|session|lobby) error:/i, "report failed:").trim();
   }
 
   const repliedMatch = raw.match(/^[^:]+ replied:\s*(.+)$/i);
@@ -619,13 +632,14 @@ function renderEventLog() {
         ? 0
         : Math.min(1, (age - EVENT_LOG_FADE_START_MS) / (EVENT_LOG_MAX_AGE_MS - EVENT_LOG_FADE_START_MS));
       const alpha = Math.max(0.08, 1 - fadeProgress);
-      const dialogText = toDialogEventText(entry);
+      const fullDialogText = toDialogEventText(entry).replace(/\s+/g, " ").trim();
+      const dialogText = truncateText(fullDialogText, EVENT_LOG_MESSAGE_MAX_CHARS);
       const targetAgentName = resolveEventAgentName(entry);
       const clickable = Boolean(targetAgentName);
       const agentLabel = entry.agentName
         ? `<span class="event-log-agent">${escapeHtml(entry.agentName)}</span>`
         : "";
-      return `<div class="event-log-entry" data-event-index="${index}" data-kind="${escapeHtml(entry.kind)}" data-clickable="${clickable ? "true" : "false"}" style="opacity:${alpha.toFixed(3)}"><span class="event-log-time">${entry.time}</span><span class="event-log-text">${agentLabel}${escapeHtml(dialogText)}</span></div>`;
+      return `<div class="event-log-entry" data-event-index="${index}" data-kind="${escapeHtml(entry.kind)}" data-clickable="${clickable ? "true" : "false"}" style="opacity:${alpha.toFixed(3)}"><span class="event-log-time">${entry.time}</span><span class="event-log-text" title="${escapeHtml(fullDialogText)}">${agentLabel}${escapeHtml(dialogText)}</span></div>`;
     })
     .join("");
 
@@ -1574,12 +1588,33 @@ function normalizeCampfireLabel(value) {
   return cleaned || DEFAULT_CAMPFIRE_LABEL;
 }
 
+function clampInt(value, fallback, min, max) {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+}
+
+function normalizeLobbySessionId(value) {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim().replace(/^dex[:_-]?/i, "");
+  return trimmed.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80);
+}
+
+function normalizeCampfireParams(partial = {}) {
+  return {
+    rounds: clampInt(partial.rounds, DEFAULT_LOBBY_PARAMS.rounds, 1, 3),
+    immediateReplies: clampInt(partial.immediateReplies, DEFAULT_LOBBY_PARAMS.immediateReplies, 1, 4),
+    autonomy: partial.autonomy !== false,
+    sessionId: normalizeLobbySessionId(partial.sessionId ?? DEFAULT_LOBBY_PARAMS.sessionId),
+  };
+}
+
 function getCampfireSessionToken() {
   const token = normalizeCampfireLabel(campfireLabel)
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
-  return token || "session";
+  return token || "lobby";
 }
 
 function isAgentVisibleName(name) {
@@ -1676,6 +1711,7 @@ function saveUiSettings() {
       JSON.stringify({
         hiddenAgentNames: Array.from(hiddenAgentNames),
         campfireLabel: normalizeCampfireLabel(campfireLabel),
+        campfireParams: normalizeCampfireParams(campfireUiParams),
       })
     );
   } catch {
@@ -1698,12 +1734,18 @@ function loadUiSettings() {
     }
     if (typeof parsed?.campfireLabel === "string") {
       const normalizedLabel = normalizeCampfireLabel(parsed.campfireLabel);
-      campfireLabel = /^campfire$/i.test(normalizedLabel) ? DEFAULT_CAMPFIRE_LABEL : normalizedLabel;
+      campfireLabel = /^(campfire|session)$/i.test(normalizedLabel) ? DEFAULT_CAMPFIRE_LABEL : normalizedLabel;
+    }
+    if (parsed?.campfireParams && typeof parsed.campfireParams === "object") {
+      campfireUiParams = normalizeCampfireParams(parsed.campfireParams);
     }
   } catch {
     hiddenAgentNames = hiddenAgentNames || new Set();
     campfireLabel = campfireLabel || DEFAULT_CAMPFIRE_LABEL;
   }
+  hiddenAgentNames = hiddenAgentNames || new Set();
+  campfireLabel = normalizeCampfireLabel(campfireLabel);
+  campfireUiParams = normalizeCampfireParams(campfireUiParams);
 }
 
 function applyCampfireLabelToUi(syncInput = true) {
@@ -1720,6 +1762,35 @@ function applyCampfireLabelToUi(syncInput = true) {
   if (syncInput && settingsInput) settingsInput.value = normalizeCampfireLabel(campfireLabel);
 
   updateCampfireSession();
+}
+
+function applyCampfireParamsToUi() {
+  const roundsInput = document.getElementById("lobby-param-rounds");
+  const immediateInput = document.getElementById("lobby-param-immediate");
+  const autonomyInput = document.getElementById("lobby-param-autonomy");
+  const sessionInput = document.getElementById("lobby-param-session");
+  if (roundsInput) roundsInput.value = String(campfireUiParams.rounds);
+  if (immediateInput) immediateInput.value = String(campfireUiParams.immediateReplies);
+  if (autonomyInput) autonomyInput.checked = Boolean(campfireUiParams.autonomy);
+  if (sessionInput) sessionInput.value = campfireUiParams.sessionId || "";
+}
+
+function readCampfireParamsFromUi() {
+  const roundsInput = document.getElementById("lobby-param-rounds");
+  const immediateInput = document.getElementById("lobby-param-immediate");
+  const autonomyInput = document.getElementById("lobby-param-autonomy");
+  const sessionInput = document.getElementById("lobby-param-session");
+
+  const next = normalizeCampfireParams({
+    rounds: roundsInput ? roundsInput.value : campfireUiParams.rounds,
+    immediateReplies: immediateInput ? immediateInput.value : campfireUiParams.immediateReplies,
+    autonomy: autonomyInput ? autonomyInput.checked : campfireUiParams.autonomy,
+    sessionId: sessionInput ? sessionInput.value : campfireUiParams.sessionId,
+  });
+  campfireUiParams = next;
+  applyCampfireParamsToUi();
+  updateCampfireSession();
+  return next;
 }
 
 function renderSettingsAgentToggles() {
@@ -4410,6 +4481,7 @@ function showCampfire() {
   const panel = document.getElementById("campfire-panel");
   panel.classList.add("visible");
   const visibleAgents = refreshCampfireAgentButtons();
+  applyCampfireParamsToUi();
 
   updateCampfireSession();
   renderCampfireMessages();
@@ -4434,8 +4506,18 @@ function updateCampfireSession() {
   const sessionEl = document.getElementById("campfire-session");
   if (!sessionEl) return;
   pruneCampfireSelectionToVisible();
+  const params = normalizeCampfireParams(campfireUiParams);
+  campfireUiParams = params;
   const visibleCount = getVisibleAgents().length;
   const names = [...campfireSelected].sort();
+  if (params.sessionId) {
+    sessionEl.textContent = `dex:${params.sessionId}`;
+    return;
+  }
+  if (campfireSessionId) {
+    sessionEl.textContent = String(campfireSessionId);
+    return;
+  }
   if (visibleCount > 0 && names.length === visibleCount) {
     sessionEl.textContent = `dex:${getCampfireSessionToken()}`;
   } else if (names.length === 0) {
@@ -4456,7 +4538,7 @@ function renderCampfireMessages() {
   }
   if (campfireMessages.length === 0) {
     container.innerHTML =
-      '<div style="color: var(--fg-muted); font-size: 11px; font-family: var(--font-mono); padding: 16px 0; text-align: center;">select agents and start a conversation</div>';
+      '<div style="color: var(--fg-muted); font-size: 11px; font-family: var(--font-mono); padding: 16px 0; text-align: center;">select agents and start the lobby</div>';
     return;
   }
 
@@ -4486,7 +4568,7 @@ function renderCampfireTraceEntries() {
   if (!container) return;
 
   if (campfireTraceEntries.length === 0) {
-    container.innerHTML = '<div class="campfire-trace-empty">group traces appear here</div>';
+    container.innerHTML = '<div class="campfire-trace-empty">lobby traces appear here</div>';
     if (statusEl) statusEl.textContent = "0 calls";
     return;
   }
@@ -4519,6 +4601,8 @@ function renderCampfireTraceEntries() {
 async function sendCampfire(message) {
   pruneCampfireSelectionToVisible();
   const selected = [...campfireSelected];
+  const lobbyParams = readCampfireParamsFromUi();
+  saveUiSettings();
   if (selected.length < 2 || campfireSending) return;
 
   campfireSending = true;
@@ -4534,7 +4618,7 @@ async function sendCampfire(message) {
   }
 
   // Show thinking indicator
-  campfireMessages.push({ agent: "...", message: "waiting for next reply...", type: "thinking" });
+  campfireMessages.push({ agent: "...", message: "lobby waiting for next reply...", type: "thinking" });
   renderCampfireMessages();
 
   try {
@@ -4551,10 +4635,10 @@ async function sendCampfire(message) {
         agents: selected,
         message: message && message.trim() ? message.trim() : undefined,
         history,
-        rounds: 1,
-        maxImmediateReplies: 1,
-        sessionId: campfireSessionId || undefined,
-        autonomy: true,
+        rounds: lobbyParams.rounds,
+        maxImmediateReplies: lobbyParams.immediateReplies,
+        sessionId: lobbyParams.sessionId || campfireSessionId || undefined,
+        autonomy: lobbyParams.autonomy,
       }),
     });
 
@@ -4567,6 +4651,7 @@ async function sendCampfire(message) {
         resetCampfireLiveTracking();
       }
       campfireSessionId = incomingSession;
+      updateCampfireSession();
     }
     
     // Remove thinking indicator
@@ -4604,7 +4689,7 @@ async function sendCampfire(message) {
   } catch (err) {
     campfireMessages = campfireMessages.filter((m) => m.type !== "thinking");
     campfireMessages.push({ agent: "system", message: "could not reach agents", type: "error" });
-    logAgentEvent("report failed: session unreachable", {
+    logAgentEvent("report failed: lobby unreachable", {
       kind: "state",
       dedupeKey: "campfire-unreachable",
       cooldownMs: 2600,
@@ -5033,7 +5118,19 @@ function handleKeyDown(e) {
   }
 
   if (view === "campfire") {
+    const campfirePanel = document.getElementById("campfire-panel");
     const campfireInput = document.getElementById("campfire-input");
+    const activeEl = document.activeElement;
+    const activeInsideCampfire = Boolean(
+      campfirePanel &&
+      activeEl instanceof Node &&
+      campfirePanel.contains(activeEl)
+    );
+    const activeEditable = Boolean(
+      activeEl &&
+      (activeEl.tagName === "INPUT" || activeEl.tagName === "TEXTAREA" || activeEl.isContentEditable)
+    );
+
     if (document.activeElement === campfireInput) {
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
@@ -5045,6 +5142,13 @@ function handleKeyDown(e) {
         campfireInput.blur();
         hideCampfire();
         return;
+      }
+      return;
+    }
+    if (activeInsideCampfire && activeEditable) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        activeEl.blur();
       }
       return;
     }
@@ -5545,6 +5649,7 @@ async function init() {
   loadUiSettings();
   loadTraceHistory();
   applyCampfireLabelToUi(true);
+  applyCampfireParamsToUi();
   window.addEventListener("resize", resize);
   document.addEventListener("keydown", handleKeyDown);
   canvas.addEventListener("click", handleCanvasClick);
@@ -5729,6 +5834,27 @@ async function init() {
     document.querySelectorAll(".campfire-agent-btn").forEach((b) => b.classList.remove("selected"));
     updateCampfireSession();
   });
+  const lobbyRoundsInput = document.getElementById("lobby-param-rounds");
+  const lobbyImmediateInput = document.getElementById("lobby-param-immediate");
+  const lobbyAutonomyInput = document.getElementById("lobby-param-autonomy");
+  const lobbySessionInput = document.getElementById("lobby-param-session");
+  const syncLobbyParams = () => {
+    readCampfireParamsFromUi();
+    saveUiSettings();
+  };
+  if (lobbyRoundsInput) {
+    lobbyRoundsInput.addEventListener("change", syncLobbyParams);
+  }
+  if (lobbyImmediateInput) {
+    lobbyImmediateInput.addEventListener("change", syncLobbyParams);
+  }
+  if (lobbyAutonomyInput) {
+    lobbyAutonomyInput.addEventListener("change", syncLobbyParams);
+  }
+  if (lobbySessionInput) {
+    lobbySessionInput.addEventListener("input", syncLobbyParams);
+    lobbySessionInput.addEventListener("change", syncLobbyParams);
+  }
 
   // DJ boombox + profile trace controls
   const djBoomboxPlayBtn = document.getElementById("dj-boombox-play");
