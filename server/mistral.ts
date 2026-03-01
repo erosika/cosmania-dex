@@ -78,6 +78,12 @@ export interface GroupChatResult {
   totalOutputTokens: number;
 }
 
+interface GroupChatOptions {
+  maxSpeakers?: number;
+  speakerOffset?: number;
+  participantNames?: string[];
+}
+
 // ----- Agent Self-Awareness -----
 
 /**
@@ -145,6 +151,12 @@ const AGENT_CAPABILITIES: Record<string, {
     canDo: ["Process audio files", "Apply effects", "Mix tracks", "Auto-duck under speech", "Match tempo"],
     gaps: ["Cannot generate original music from scratch", "No synthesizer access", "Cannot record live audio", "Expensive (companion tier)"],
     collaborates: ["director (soundtracks for video)", "scribe (audio reports)"],
+  },
+  dj: {
+    tools: ["Playlist memory recall", "Track recommendation synthesis", "Session vibe matching", "Roster/context lookup"],
+    canDo: ["Pick tracks by mood or request", "Suggest fresh tracks for a vibe", "Switch between play/pause states", "Respond with concise track picks"],
+    gaps: ["No direct streaming service playback APIs in DEX", "Cannot legally distribute audio files", "No BPM analysis on remote links without local media"],
+    collaborates: ["composer (mix and mastering pipeline)", "director (soundtracks for edits)"],
   },
   photoblogger: {
     tools: ["LLM vision (OpenRouter)", "Honcho persona memory", "Photo catalog (SQLite)", "ffmpeg resize", "Obsidian vault writer", "Static HTML generator", "Image upload receiver"],
@@ -218,7 +230,7 @@ const AVAILABLE_MODELS = [
   { name: "Moderation", modelId: "mistral-moderation-latest", toolUse: false },
 ] as const;
 
-const VALID_MODEL_IDS = new Set(AVAILABLE_MODELS.map((m) => m.modelId));
+const VALID_MODEL_IDS: ReadonlySet<string> = new Set(AVAILABLE_MODELS.map((m) => m.modelId));
 
 function getClient(): Mistral {
   const apiKey = process.env.MISTRAL_API_KEY;
@@ -510,6 +522,7 @@ const AGENT_TOOL_TIERS: Record<string, string[]> = {
   observer: KNOWLEDGE_TOOLS,
   director: PRODUCTION_TOOLS,
   composer: PRODUCTION_TOOLS,
+  dj: PRODUCTION_TOOLS,
   photoblogger: PHOTOBLOGGER_TOOLS,
   vitals: PRODUCTION_TOOLS,
   eros: PRODUCTION_TOOLS,
@@ -683,8 +696,14 @@ const TOOL_HANDLERS: Record<string, (args: Record<string, any>) => Promise<{ suc
 
     try {
       const { readFileSync } = await import("node:fs");
-      const buffer = readFileSync(upload.path);
-      const base64 = Buffer.from(buffer).toString("base64");
+      const sharp = (await import("sharp")).default;
+
+      // Resize to max 2048px on longest edge to avoid rate limits on large files
+      const resized = await sharp(upload.path)
+        .resize(2048, 2048, { fit: "inside", withoutEnlargement: true })
+        .jpeg({ quality: 85 })
+        .toBuffer();
+      const base64 = resized.toString("base64");
 
       const model = process.env.PHOTO_ANALYSIS_MODEL || "pixtral-large-latest";
 
@@ -774,14 +793,22 @@ Describe what you see with precision. The personalitySignals field should read l
 
   async ingest_to_catalog(args) {
     try {
+      const upload = uploadRegistry.get(args.upload_id);
+      if (!upload) {
+        return { success: false, data: null, error: `Upload not found: ${args.upload_id}` };
+      }
+      const { readFileSync } = await import("node:fs");
+      const fileBuffer = readFileSync(upload.path);
+      const base64 = fileBuffer.toString("base64");
       const res = await fetch(`${COSMANIA_URL}/dex/photo/ingest`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ uploadId: args.upload_id, analysis: args.analysis }),
-        signal: AbortSignal.timeout(10000),
+        body: JSON.stringify({ filename: upload.filename, data: base64 }),
+        signal: AbortSignal.timeout(30000),
       });
       if (!res.ok) {
-        return { success: false, data: null, error: `Cosmania upstream ${res.status}` };
+        const errBody = await res.text().catch(() => "");
+        return { success: false, data: null, error: `Cosmania upstream ${res.status}: ${errBody}` };
       }
       return { success: true, data: await res.json() };
     } catch (e) {
@@ -914,6 +941,19 @@ function buildAgentSystemPrompt(profile: AgentProfile, honchoContext?: string): 
     parts.push("");
     parts.push("Your persona conclusions should be specific and grounded: 'eri returns to negative space in urban geometry' not 'eri takes good photos'.");
     parts.push("You develop an evolving understanding of eri's photographic identity over time. Reference past observations.");
+    parts.push("");
+  }
+
+  // DJ-specific role framing
+  if (profile.name === "dj") {
+    parts.push("## Your Role");
+    parts.push("You are eri's DJ deck operator inside DEX.");
+    parts.push("When asked to play, pause, request, or query tracks:");
+    parts.push("1. Respond with concrete track picks, not vague genre chatter.");
+    parts.push("2. Prefer concise output in the form: track - artist (one short reason).");
+    parts.push("3. If asked to pause, explicitly confirm playback is paused.");
+    parts.push("4. If asked for a new track, avoid repeating your previous suggestion if possible.");
+    parts.push("5. Keep momentum and taste: decisive, punchy, and specific.");
     parts.push("");
   }
 
@@ -1317,15 +1357,30 @@ export const generateGroupChat = traced(async function generateGroupChat(
   rounds = 1,
   history: {agent: string, message: string}[] = [],
   existingSessionId?: string,
+  options: GroupChatOptions = {},
 ): Promise<GroupChatResult> {
   const client = getClient();
-  const participantNames = profiles.map((p) => p.name);
+  const participantNames = Array.isArray(options.participantNames) && options.participantNames.length > 0
+    ? options.participantNames.map((name) => String(name).trim()).filter(Boolean)
+    : profiles.map((p) => p.name);
   // If client provides an existing session ID, continue that session.
   // Otherwise derive a new one from the current participants.
   const session = existingSessionId || sessionKey(participantNames);
   const lines: StandupLine[] = [];
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
+
+  const normalizedSpeakerOffset = Number.isFinite(options.speakerOffset)
+    ? Math.max(0, Math.floor(options.speakerOffset as number))
+    : 0;
+  const requestedMaxSpeakers = Number.isFinite(options.maxSpeakers)
+    ? Math.max(1, Math.floor(options.maxSpeakers as number))
+    : profiles.length;
+  const speakerStart = profiles.length > 0 ? normalizedSpeakerOffset % profiles.length : 0;
+  const orderedSpeakers = profiles.length > 0
+    ? profiles.slice(speakerStart).concat(profiles.slice(0, speakerStart))
+    : [];
+  const speakers = orderedSpeakers.slice(0, Math.min(requestedMaxSpeakers, orderedSpeakers.length));
 
   // Build capability roster so agents know who's in the room
   const rosterContext = profiles
@@ -1350,7 +1405,7 @@ export const generateGroupChat = traced(async function generateGroupChat(
   }
 
   for (let round = 0; round < rounds; round++) {
-    for (const agent of profiles) {
+    for (const agent of speakers) {
       // Build agent-specific system prompt with self-awareness
       const selfCap = buildCapabilitySection(agent.name);
 
@@ -1409,7 +1464,7 @@ export const generateGroupChat = traced(async function generateGroupChat(
       }
 
       try {
-        console.log(`[mistral] Generating campfire message for ${agent.name}...`);
+        console.log(`[mistral] Generating group-session message for ${agent.name}...`);
         const tools = getToolsForAgent(agent.name);
         const groupMessages: any[] = [
           { role: "system", content: systemPrompt },
@@ -1470,7 +1525,7 @@ export const generateGroupChat = traced(async function generateGroupChat(
                 toolResult = { success: false, data: null, error: e instanceof Error ? e.message : String(e) };
               }
               const durationMs = Math.round(performance.now() - start);
-              console.log(`[mistral] campfire tool: ${agent.name} -> ${fnName} (${toolResult.success ? "ok" : "err"}, ${durationMs}ms)`);
+              console.log(`[mistral] group-session tool: ${agent.name} -> ${fnName} (${toolResult.success ? "ok" : "err"}, ${durationMs}ms)`);
               agentToolCalls.push({
                 id: tc.id ?? `campfire_${iter}_${fnName}`,
                 name: fnName,
@@ -1504,7 +1559,13 @@ export const generateGroupChat = traced(async function generateGroupChat(
         // Record in Honcho group session
         if (honchoEnabled()) {
           try {
-            await recordGroupMessage(participantNames, agent.name, finalContent, session);
+            await recordGroupMessage(
+              participantNames,
+              agent.name,
+              finalContent,
+              session,
+              agentToolCalls.length > 0 ? agentToolCalls : undefined,
+            );
           } catch (e) {
             console.error("[honcho] Failed to record group message", e);
           }

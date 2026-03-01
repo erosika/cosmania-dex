@@ -16,6 +16,21 @@
 
   <div id="canvas-wrap">
     <canvas id="grid-canvas"></canvas>
+    <div id="dj-boombox" hidden>
+      <div class="dj-boombox-top">
+        <span class="dj-boombox-label">DJ BOX</span>
+        <span class="dj-boombox-state" id="dj-boombox-state">idle</span>
+      </div>
+      <div class="dj-boombox-face" aria-hidden="true">
+        <span class="dj-boombox-speaker left"></span>
+        <span class="dj-boombox-deck"></span>
+        <span class="dj-boombox-speaker right"></span>
+      </div>
+      <div class="dj-boombox-actions">
+        <button id="dj-boombox-play" type="button">PLAY</button>
+        <button id="dj-boombox-pause" type="button">PAUSE</button>
+      </div>
+    </div>
   </div>
 
   <div id="controls-bar">
@@ -164,6 +179,27 @@
         </div>
       </div>
       <div id="trace-entries"></div>
+      <div id="dj-trace-controls" hidden>
+        <div class="dj-trace-title">DJ DECK</div>
+        <div class="dj-trace-row">
+          <button id="dj-trace-play" type="button">PLAY</button>
+          <button id="dj-trace-pause" type="button">PAUSE</button>
+        </div>
+        <div class="dj-trace-row">
+          <input
+            id="dj-track-input"
+            type="text"
+            autocomplete="off"
+            placeholder="request or query a new track..."
+            aria-label="DJ track request"
+          />
+        </div>
+        <div class="dj-trace-row">
+          <button id="dj-track-request" type="button">REQUEST</button>
+          <button id="dj-track-query" type="button">QUERY NEW</button>
+        </div>
+        <div id="dj-trace-feedback">idle</div>
+      </div>
     </div>
   </div>
   <div id="photo-upload-preview" class="photo-upload-preview" style="display: none;">
@@ -188,13 +224,13 @@
     <span class="control-hint"><kbd>T</kbd> trace</span>
     <span class="control-hint"><kbd>Enter</kbd> send</span>
     <span class="control-hint"><kbd>M</kbd> model</span>
-    <span class="control-hint"><kbd>Space</kbd> <span id="profile-campfire-hint-label">campfire</span></span>
+    <span class="control-hint"><kbd>Space</kbd> <span id="profile-campfire-hint-label">session</span></span>
   </div>
 </div>
 
 <div id="campfire-panel">
   <div id="campfire-header">
-    <span class="campfire-title" id="campfire-title">CAMPFIRE</span>
+    <span class="campfire-title" id="campfire-title">GROUP SESSION</span>
     <span class="campfire-session" id="campfire-session"></span>
   </div>
   <div id="campfire-select">
@@ -205,7 +241,16 @@
       <button id="campfire-none">NONE</button>
     </div>
   </div>
-  <div id="campfire-messages"></div>
+  <div id="campfire-workspace">
+    <div id="campfire-messages"></div>
+    <div id="campfire-trace-panel">
+      <div class="panel-header">
+        <span class="panel-label">TRACE</span>
+        <span class="trace-status" id="campfire-trace-status"></span>
+      </div>
+      <div id="campfire-trace-entries"></div>
+    </div>
+  </div>
   <div id="campfire-input-wrap">
     <span class="chat-caret">&gt;</span>
     <input id="campfire-input" type="text" placeholder="say something to the group..." autocomplete="off" />
@@ -258,14 +303,14 @@
   <div id="settings-menu-panel" hidden>
     <div class="settings-menu-title">UI SETTINGS</div>
     <label class="settings-field" for="settings-campfire-name">
-      <span class="settings-section-label">campfire label</span>
+      <span class="settings-section-label">session label</span>
       <input
         id="settings-campfire-name"
         type="text"
         maxlength="30"
         autocomplete="off"
-        placeholder="Campfire"
-        aria-label="Rename campfire"
+        placeholder="Session"
+        aria-label="Rename session"
       />
     </label>
     <div class="settings-section-label">visible agents</div>

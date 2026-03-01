@@ -59,6 +59,14 @@ const EVENT_UPLOAD_BATCH_MS = 1200;
 const EVENT_UPLOAD_MAX_BATCH = 36;
 const EVENT_UPLOAD_QUEUE_LIMIT = 1200;
 const EVENT_BOOTSTRAP_LOAD_LIMIT = 180;
+const EVENT_SERVER_POLL_MS = 3200;
+const EVENT_SERVER_POLL_LIMIT = 180;
+const CAMPFIRE_UPDATES_POLL_MS = 2500;
+const CAMPFIRE_UPDATES_LIMIT = 90;
+const CAMPFIRE_TRACE_RENDER_LIMIT = 140;
+const DJ_AGENT_NAME = "dj";
+const DJ_CONTROL_HISTORY_LIMIT = 12;
+const DJ_STATUS_TEXT_LIMIT = 96;
 const MODEL_ICON_ORBIT_SPEED = 0.0022;
 const MODEL_ICON_FLOAT_AMPLITUDE = 2.8;
 const MOVE_TARGET_BLEND = 0.2;
@@ -67,7 +75,7 @@ const MOVE_FACING_DEADZONE = 0.003;
 const WALK_ARRIVE_RADIUS = 7;
 const WALK_SLOW_RADIUS = 28;
 const SETTINGS_STORAGE_KEY = "cosmania-dex:ui-settings:v1";
-const DEFAULT_CAMPFIRE_LABEL = "Campfire";
+const DEFAULT_CAMPFIRE_LABEL = "Session";
 
 
 const TYPE_COLORS = {
@@ -187,6 +195,15 @@ let campfireSelected = new Set(); // agent names selected for campfire
 let campfireMessages = []; // { agent, message, type }
 let campfireSending = false;
 let campfireSessionId = null; // Honcho session ID -- persists when peers change
+let campfireUpdatesTimer = null;
+let campfireUpdatesInFlight = false;
+let campfireUpdateSinceTs = 0;
+let campfireSeenRecordIds = new Set();
+let campfireTraceEntries = []; // { id, agent, name, ok, durationMs, argsPreview, resultPreview, tsMs }
+let campfireSeenTraceIds = new Set();
+let djControlInFlight = false;
+let djStatusText = "idle";
+let djStatusMode = "idle"; // "idle" | "playing" | "paused" | "error"
 let lastTimestamp = 0;
 let pixelField = null;
 let worldInteractionPoints = [];
@@ -229,6 +246,10 @@ let activeChatEventContext = null; // { agentName, time, kind, message, ts }
 let eventUploadQueue = []; // events pending persistence POST /api/events
 let eventUploadInFlight = false;
 let eventUploadLastSentAt = 0;
+let eventServerPollInFlight = false;
+let eventServerLastPollAt = 0;
+let eventServerLastSyncTs = 0;
+let eventServerSeenKeys = new Set();
 let hiddenAgentNames = new Set(); // lower-case agent names hidden from UI
 let settingsMenuOpen = false;
 let campfireLabel = DEFAULT_CAMPFIRE_LABEL;
@@ -369,6 +390,9 @@ function formatEventTime(ts) {
 function hydrateEventEntry(entry) {
   if (!entry || typeof entry !== "object") return null;
 
+  const id = typeof entry.id === "string" && entry.id.trim()
+    ? entry.id.trim()
+    : null;
   const tsIso = typeof entry.ts === "string"
     ? entry.ts
     : (typeof entry.receivedAt === "string" ? entry.receivedAt : "");
@@ -382,6 +406,7 @@ function hydrateEventEntry(entry) {
     : "info";
 
   return {
+    id,
     ts,
     time: formatEventTime(ts),
     message,
@@ -394,6 +419,58 @@ function hydrateEventEntry(entry) {
       ? entry.meta
       : null,
   };
+}
+
+function getServerEventMergeKey(entry) {
+  if (entry && entry.id) return `id:${entry.id}`;
+  return [
+    "server-fallback",
+    String(entry?.ts ?? ""),
+    String(entry?.kind ?? ""),
+    String(entry?.agentName ?? ""),
+    String(entry?.message ?? ""),
+  ].join(":");
+}
+
+function rebuildServerEventSeenSet() {
+  const next = new Set();
+  let latestTs = 0;
+  for (const entry of eventLogEntries) {
+    if (!entry || entry.source !== "server") continue;
+    next.add(getServerEventMergeKey(entry));
+    if (entry.ts > latestTs) latestTs = entry.ts;
+  }
+  eventServerSeenKeys = next;
+  eventServerLastSyncTs = latestTs;
+}
+
+function mergeServerEvents(entries) {
+  if (!Array.isArray(entries) || entries.length === 0) return false;
+  const serverEntries = entries
+    .filter((entry) => entry && entry.source === "server")
+    .sort((a, b) => a.ts - b.ts);
+
+  if (serverEntries.length === 0) return false;
+
+  let changed = false;
+  for (const entry of serverEntries) {
+    const key = getServerEventMergeKey(entry);
+    if (eventServerSeenKeys.has(key)) continue;
+    eventServerSeenKeys.add(key);
+    if (entry.ts > eventServerLastSyncTs) {
+      eventServerLastSyncTs = entry.ts;
+    }
+    eventLogEntries.unshift(entry);
+    changed = true;
+  }
+
+  if (changed && eventLogEntries.length > EVENT_LOG_LIMIT) {
+    eventLogEntries.length = EVENT_LOG_LIMIT;
+  }
+  if (eventServerSeenKeys.size > EVENT_LOG_LIMIT * 30) {
+    rebuildServerEventSeenSet();
+  }
+  return changed;
 }
 
 function shouldShowEventLog() {
@@ -439,8 +516,8 @@ function toDialogEventText(entry) {
   if (/unreachable/i.test(raw)) {
     return "report failed: unreachable";
   }
-  if (/campfire error:/i.test(raw)) {
-    return raw.replace(/campfire error:/i, "report failed:").trim();
+  if (/(campfire|session) error:/i.test(raw)) {
+    return raw.replace(/(?:campfire|session) error:/i, "report failed:").trim();
   }
 
   const repliedMatch = raw.match(/^[^:]+ replied:\s*(.+)$/i);
@@ -758,10 +835,45 @@ async function loadPersistedEvents() {
 
     if (hydrated.length > 0) {
       eventLogEntries = hydrated.slice(0, EVENT_LOG_LIMIT);
+      rebuildServerEventSeenSet();
       eventLogLastMarkup = "";
     }
   } catch {
     // best effort only
+  }
+}
+
+async function pollServerEvents(now = Date.now()) {
+  if (eventServerPollInFlight) return;
+  if (now - eventServerLastPollAt < EVENT_SERVER_POLL_MS) return;
+  eventServerLastPollAt = now;
+  eventServerPollInFlight = true;
+
+  try {
+    const params = new URLSearchParams();
+    params.set("limit", String(EVENT_SERVER_POLL_LIMIT));
+    if (eventServerLastSyncTs > 0) {
+      params.set("since", new Date(Math.max(0, eventServerLastSyncTs - 1000)).toISOString());
+    }
+
+    const res = await fetch(`/api/events?${params.toString()}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!data || !Array.isArray(data.events)) return;
+    const hydrated = data.events
+      .map(hydrateEventEntry)
+      .filter(Boolean);
+    const changed = mergeServerEvents(hydrated);
+    if (changed) {
+      eventLogLastMarkup = "";
+      if (!isEventSearchMode()) {
+        renderEventLog();
+      }
+    }
+  } catch {
+    // best effort only
+  } finally {
+    eventServerPollInFlight = false;
   }
 }
 
@@ -897,11 +1009,32 @@ function generatePlaceholderSprite(agent) {
 
 // ---- Data Fetching ----
 
+function buildDjFallbackAgent() {
+  return {
+    name: DJ_AGENT_NAME,
+    role: DJ_AGENT_NAME,
+    tagline: "Obsessive music nerd.",
+    type: "production",
+    state: "healthy",
+    bubble: "...",
+    schedule: "",
+    executionTier: "none",
+    lastRun: null,
+  };
+}
+
+function ensureDjAgentInRoster(roster) {
+  if (!Array.isArray(roster)) return [buildDjFallbackAgent()];
+  const hasDj = roster.some((agent) => String(agent?.name || "").trim().toLowerCase() === DJ_AGENT_NAME);
+  if (hasDj) return roster;
+  return [...roster, buildDjFallbackAgent()];
+}
+
 async function fetchRoster() {
   try {
     const res = await fetch("/dex/agents");
     if (!res.ok) throw new Error(`${res.status}`);
-    const data = await res.json();
+    const data = ensureDjAgentInRoster(await res.json());
     if (Array.isArray(data) && data.length > 0) {
       // Detect state changes for flash effect
       for (const newAgent of data) {
@@ -965,6 +1098,7 @@ async function fetchRoster() {
       }
       reconcileSelectedAgentVisibility();
       renderSettingsAgentToggles();
+      syncDjUiState();
       if (view === "campfire") {
         refreshCampfireAgentButtons();
         updateCampfireSession();
@@ -973,10 +1107,11 @@ async function fetchRoster() {
   } catch (e) {
     console.warn("[dex] Failed to fetch roster:", e.message);
     if (agents.length === 0) {
-      agents = generateFallbackRoster();
+      agents = ensureDjAgentInRoster(generateFallbackRoster());
       primeRosterSprites();
       reconcileSelectedAgentVisibility();
       renderSettingsAgentToggles();
+      syncDjUiState();
     }
   }
 }
@@ -1006,7 +1141,7 @@ function generateFallbackRoster() {
     { name: "photoblogger", type: "production", tagline: "Curates the visual record." },
     { name: "vitals", type: "embodied", tagline: "Reads the body." },
     { name: "eros", type: "embodied", tagline: "Sensation as architecture." },
-    { name: "dj", type: "production", tagline: "Obsessive music nerd." },
+    { name: DJ_AGENT_NAME, type: "production", tagline: "Obsessive music nerd." },
   ];
   return names.map((n) => ({
     ...n,
@@ -1444,7 +1579,7 @@ function getCampfireSessionToken() {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
-  return token || "campfire";
+  return token || "session";
 }
 
 function isAgentVisibleName(name) {
@@ -1562,7 +1697,8 @@ function loadUiSettings() {
       );
     }
     if (typeof parsed?.campfireLabel === "string") {
-      campfireLabel = normalizeCampfireLabel(parsed.campfireLabel);
+      const normalizedLabel = normalizeCampfireLabel(parsed.campfireLabel);
+      campfireLabel = /^campfire$/i.test(normalizedLabel) ? DEFAULT_CAMPFIRE_LABEL : normalizedLabel;
     }
   } catch {
     hiddenAgentNames = hiddenAgentNames || new Set();
@@ -2824,7 +2960,7 @@ function drawFloatingModelTag(ctx, modelMeta, spriteX, spriteY, spriteSize, time
     ctx.drawImage(iconImage, left, top, iconSize, iconSize);
   } else if (modelMeta.label) {
     const fallback = modelMeta.label.slice(0, 6);
-    ctx.font = "7px 'Departure Mono', 'Noto Emoji', 'Noto Color Emoji', monospace";
+    ctx.font = "7px 'Departure Mono', 'Noto Emoji', monospace";
     ctx.textAlign = "left";
     ctx.textBaseline = "top";
     ctx.shadowColor = "rgba(0, 0, 0, 0.6)";
@@ -2932,7 +3068,7 @@ function drawAquarium(timestamp) {
     const drawIndicatorTag = (text, centerX, centerY, fg, alpha = 1) => {
       if (!text) return;
       ctx.save();
-      ctx.font = "8px 'Departure Mono', 'Noto Emoji', 'Noto Color Emoji', monospace";
+      ctx.font = "8px 'Departure Mono', 'Noto Emoji', monospace";
       ctx.textAlign = "center";
       ctx.textBaseline = "top";
       const tw = Math.ceil(ctx.measureText(text).width);
@@ -2991,7 +3127,7 @@ function drawAquarium(timestamp) {
     ctx.save();
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
-    ctx.font = "8px 'Departure Mono', 'Noto Emoji', 'Noto Color Emoji', monospace";
+    ctx.font = "8px 'Departure Mono', 'Noto Emoji', monospace";
     const nameWidth = Math.ceil(ctx.measureText(nameText).width) + 8;
     const nameHeight = 10;
     const nameLeft = Math.floor(labelX - nameWidth / 2);
@@ -3006,7 +3142,7 @@ function drawAquarium(timestamp) {
 
     if (agent.lastRun) {
       const runText = timeAgo(agent.lastRun).toUpperCase();
-      ctx.font = "7px 'Departure Mono', 'Noto Emoji', 'Noto Color Emoji', monospace";
+      ctx.font = "7px 'Departure Mono', 'Noto Emoji', monospace";
       const runWidth = Math.ceil(ctx.measureText(runText).width) + 6;
       const runHeight = 8;
       const runLeft = Math.floor(labelX - runWidth / 2);
@@ -3155,6 +3291,7 @@ function rebuildTraceHistory(agentName) {
 function renderTraceEntries(agentName) {
   const container = document.getElementById("trace-entries");
   if (!container) return;
+  const statusEl = document.getElementById("trace-status");
 
   const allEntries = traceHistory[agentName] || [];
   if (!traceExpandedIds[agentName]) traceExpandedIds[agentName] = new Set();
@@ -3166,6 +3303,8 @@ function renderTraceEntries(agentName) {
 
   if (allEntries.length === 0) {
     container.innerHTML = '<div class="trace-empty">tool calls appear here</div>';
+    if (statusEl) statusEl.textContent = "0 calls";
+    renderDjTraceControls(agentName);
     return;
   }
 
@@ -3232,7 +3371,6 @@ function renderTraceEntries(agentName) {
   container.scrollTop = container.scrollHeight;
 
   // Update trace status count
-  const statusEl = document.getElementById("trace-status");
   if (statusEl) {
     const total = allEntries.length;
     const shown = entries.length;
@@ -3240,6 +3378,7 @@ function renderTraceEntries(agentName) {
       ? `${shown}/${total} calls`
       : `${total} call${total !== 1 ? "s" : ""}`;
   }
+  renderDjTraceControls(agentName);
 }
 
 function setTracePanelVisible(visible) {
@@ -3251,6 +3390,278 @@ function setTracePanelVisible(visible) {
   panel.classList.toggle("trace-collapsed", !visible);
   toggleBtn.textContent = visible ? "HIDE TRACE" : "SHOW TRACE";
   toggleBtn.setAttribute("aria-pressed", visible ? "true" : "false");
+}
+
+function getDjAgent() {
+  return agents.find((agent) => String(agent?.name || "").trim().toLowerCase() === DJ_AGENT_NAME) || null;
+}
+
+function isDjAvailable() {
+  const dj = getDjAgent();
+  if (!dj) return false;
+  return isAgentVisibleName(DJ_AGENT_NAME);
+}
+
+function updateDjStatusUi() {
+  const boomboxState = document.getElementById("dj-boombox-state");
+  const traceFeedback = document.getElementById("dj-trace-feedback");
+  const modeClasses = ["playing", "paused", "error"];
+  const safeText = truncateText(String(djStatusText || "idle"), DJ_STATUS_TEXT_LIMIT);
+
+  if (boomboxState) {
+    boomboxState.textContent = safeText;
+    boomboxState.classList.remove(...modeClasses);
+    if (modeClasses.includes(djStatusMode)) {
+      boomboxState.classList.add(djStatusMode);
+    }
+  }
+  if (traceFeedback) {
+    traceFeedback.textContent = safeText;
+    traceFeedback.classList.remove(...modeClasses);
+    if (modeClasses.includes(djStatusMode)) {
+      traceFeedback.classList.add(djStatusMode);
+    }
+  }
+}
+
+function setDjStatus(text, mode = "idle") {
+  djStatusText = String(text || "idle").replace(/\s+/g, " ").trim() || "idle";
+  djStatusMode = mode;
+  updateDjStatusUi();
+}
+
+function setDjControlBusy(isBusy) {
+  const busy = Boolean(isBusy);
+  const controlIds = [
+    "dj-boombox-play",
+    "dj-boombox-pause",
+    "dj-trace-play",
+    "dj-trace-pause",
+    "dj-track-request",
+    "dj-track-query",
+    "dj-track-input",
+  ];
+  for (const id of controlIds) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    el.disabled = busy;
+  }
+}
+
+function syncDjUiState() {
+  const boombox = document.getElementById("dj-boombox");
+  const available = isDjAvailable();
+  if (boombox) {
+    boombox.hidden = !(available && view === "grid");
+  }
+  if (!available) {
+    setDjStatus("dj offline", "error");
+  } else if (!djStatusText || djStatusText === "dj offline") {
+    setDjStatus("idle");
+  } else {
+    updateDjStatusUi();
+  }
+  setDjControlBusy(djControlInFlight || !available);
+}
+
+function renderDjTraceControls(agentName) {
+  const controls = document.getElementById("dj-trace-controls");
+  if (!controls) return;
+  const isDjProfile =
+    view === "profile" &&
+    profileAgent &&
+    profileAgent.name === DJ_AGENT_NAME &&
+    agentName === DJ_AGENT_NAME;
+  controls.hidden = !isDjProfile;
+  if (!isDjProfile) return;
+  syncDjUiState();
+}
+
+function buildDjCommand(action, rawQuery = "") {
+  const query = String(rawQuery || "").replace(/\s+/g, " ").trim();
+  if (action === "play") {
+    return {
+      userText: "[dj control] play",
+      prompt:
+        "Switch to PLAY mode now. Confirm what's playing in one short line. If no track is active, choose one and start it.",
+      successMode: "playing",
+    };
+  }
+  if (action === "pause") {
+    return {
+      userText: "[dj control] pause",
+      prompt: "Pause playback now. Confirm paused state in one short line.",
+      successMode: "paused",
+    };
+  }
+  if (action === "request" && query) {
+    return {
+      userText: `[dj request] ${query}`,
+      prompt:
+        `Listener request: "${query}". Pick a fitting track and respond in one short line as "track - artist" plus a brief reason.`,
+      successMode: "playing",
+      query,
+    };
+  }
+  if (action === "query" && query) {
+    return {
+      userText: `[dj query] ${query}`,
+      prompt:
+        `Find a NEW track recommendation for this vibe: "${query}". Respond in one short line as "track - artist" plus a brief reason.`,
+      successMode: "idle",
+      query,
+    };
+  }
+  return null;
+}
+
+function appendDjControlTrace(action, query, ok, durationMs, payload) {
+  if (!traceHistory[DJ_AGENT_NAME]) traceHistory[DJ_AGENT_NAME] = [];
+  const actionName = action === "play"
+    ? "dj_playback_play"
+    : action === "pause"
+      ? "dj_playback_pause"
+      : action === "request"
+        ? "dj_track_request"
+        : "dj_track_query";
+  const traceId = `djctl_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  traceHistory[DJ_AGENT_NAME].push({
+    id: traceId,
+    name: actionName,
+    args: {
+      action,
+      ...(query ? { query } : {}),
+    },
+    result: ok
+      ? { success: true, data: payload }
+      : { success: false, data: null, error: payload?.error || "request failed" },
+    durationMs,
+  });
+  if (traceHistory[DJ_AGENT_NAME].length > 260) {
+    traceHistory[DJ_AGENT_NAME] = traceHistory[DJ_AGENT_NAME].slice(-260);
+  }
+}
+
+async function runDjCommand(action, rawQuery = "") {
+  if (djControlInFlight) return;
+  syncDjUiState();
+  if (!isDjAvailable()) {
+    setDjStatus("dj offline", "error");
+    return;
+  }
+
+  const command = buildDjCommand(action, rawQuery);
+  if (!command) {
+    setDjStatus("enter a track request first", "error");
+    const input = document.getElementById("dj-track-input");
+    if (input) input.focus();
+    return;
+  }
+
+  const history = getHistory(DJ_AGENT_NAME);
+  history.push({ role: "user", content: command.userText });
+  if (profileAgent && profileAgent.name === DJ_AGENT_NAME) {
+    renderChatMessages(DJ_AGENT_NAME);
+  }
+
+  const started = performance.now();
+  djControlInFlight = true;
+  setDjStatus("dj thinking...", "idle");
+  syncDjUiState();
+
+  try {
+    const res = await fetch(`/api/chat/${DJ_AGENT_NAME}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: command.prompt,
+        history: history
+          .filter((m) => m.role !== "system")
+          .filter((m) => !String(m.content || "").startsWith("[error:"))
+          .slice(0, -1)
+          .slice(-DJ_CONTROL_HISTORY_LIMIT),
+      }),
+    });
+    const data = await res.json();
+    const durationMs = Math.round(performance.now() - started);
+
+    if (data.error) {
+      const errorText = String(data.error);
+      history.push({ role: "assistant", content: `[error: ${errorText}]` });
+      appendDjControlTrace(action, command.query, false, durationMs, { error: errorText });
+      setDjStatus(`error: ${truncateText(errorText, 72)}`, "error");
+      logAgentEvent(`dj control failed: ${truncateText(errorText, 72)}`, {
+        agentName: DJ_AGENT_NAME,
+        kind: "state",
+        dedupeKey: `dj-control-error:${action}:${errorText.slice(0, 40)}`,
+        cooldownMs: 1200,
+      });
+    } else {
+      const responseText = String(data.response || "").trim() || "ok";
+      const msgEntry = { role: "assistant", content: responseText };
+      if (Array.isArray(data.toolCalls) && data.toolCalls.length > 0) {
+        msgEntry.toolCalls = data.toolCalls;
+      }
+      history.push(msgEntry);
+      appendDjControlTrace(action, command.query, true, durationMs, { response: responseText });
+
+      if (Array.isArray(data.toolCalls) && data.toolCalls.length > 0) {
+        if (!traceHistory[DJ_AGENT_NAME]) traceHistory[DJ_AGENT_NAME] = [];
+        const existingIds = new Set(traceHistory[DJ_AGENT_NAME].map((tc) => tc.id));
+        for (const tc of data.toolCalls) {
+          if (!tc || existingIds.has(tc.id)) continue;
+          traceHistory[DJ_AGENT_NAME].push(tc);
+          existingIds.add(tc.id);
+          logAgentEvent(`${DJ_AGENT_NAME} ran ${tc.name} (${tc.durationMs}ms)`, {
+            agentName: DJ_AGENT_NAME,
+            kind: "run",
+            dedupeKey: `dj-tool:${tc.id || tc.name}:${tc.durationMs}`,
+            cooldownMs: 0,
+            meta: {
+              traceId: tc.id || null,
+              traceName: tc.name || null,
+              durationMs: typeof tc.durationMs === "number" ? tc.durationMs : null,
+              argsPreview: toPreviewText(tc.args, 180),
+              resultPreview: toPreviewText(tc.result, 180),
+            },
+          });
+        }
+      }
+
+      setDjStatus(responseText, command.successMode);
+      logAgentEvent(truncateText(responseText.replace(/\s+/g, " "), 84), {
+        agentName: DJ_AGENT_NAME,
+        kind: "chat",
+        dedupeKey: `dj-control-reply:${action}:${responseText.slice(0, 48)}`,
+        cooldownMs: 700,
+      });
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const durationMs = Math.round(performance.now() - started);
+    history.push({ role: "assistant", content: `[could not reach ${DJ_AGENT_NAME}]` });
+    appendDjControlTrace(action, command.query, false, durationMs, { error: msg });
+    setDjStatus("could not reach dj", "error");
+    logAgentEvent("dj control failed: unreachable", {
+      agentName: DJ_AGENT_NAME,
+      kind: "state",
+      dedupeKey: `dj-control-unreachable:${action}`,
+      cooldownMs: 2200,
+    });
+  } finally {
+    djControlInFlight = false;
+    syncDjUiState();
+    saveTraceHistory();
+    if (profileAgent && profileAgent.name === DJ_AGENT_NAME) {
+      renderChatMessages(DJ_AGENT_NAME);
+      renderTraceEntries(DJ_AGENT_NAME);
+      const input = document.getElementById("dj-track-input");
+      if (input && (action === "request" || action === "query")) {
+        input.value = "";
+        input.focus();
+      }
+    }
+  }
 }
 
 function normalizeChatText(value) {
@@ -3850,10 +4261,151 @@ function refreshCampfireAgentButtons() {
   return visibleAgents;
 }
 
+function resetCampfireLiveTracking() {
+  campfireUpdateSinceTs = 0;
+  campfireSeenRecordIds = new Set();
+  campfireTraceEntries = [];
+  campfireSeenTraceIds = new Set();
+}
+
+function appendCampfireTracesFromRecord(record, fallbackTsMs = Date.now()) {
+  if (!record || typeof record !== "object") return false;
+  const toolCalls = Array.isArray(record.toolCalls) ? record.toolCalls : [];
+  if (toolCalls.length === 0) return false;
+
+  const traceAgent = typeof record.agent === "string" && record.agent.trim()
+    ? record.agent.trim()
+    : "system";
+  const traceTs = Number.isFinite(fallbackTsMs) ? fallbackTsMs : Date.now();
+  let changed = false;
+
+  for (const tc of toolCalls) {
+    if (!tc || typeof tc !== "object") continue;
+    const name = typeof tc.name === "string" && tc.name.trim() ? tc.name.trim() : "tool";
+    const durationMs = Number.isFinite(tc.durationMs) ? Math.max(0, Math.round(tc.durationMs)) : 0;
+    const ok = tc?.result?.success !== false;
+
+    const traceIdSource = typeof tc.id === "string" && tc.id.trim()
+      ? tc.id.trim()
+      : `${traceAgent}:${name}:${durationMs}:${String(tc?.result?.error || "").slice(0, 48)}`;
+    const traceId = `${String(record.id || traceTs)}:${traceIdSource}`;
+    if (campfireSeenTraceIds.has(traceId)) continue;
+    campfireSeenTraceIds.add(traceId);
+
+    const argsPreview = toPreviewText(tc.args, 130);
+    const resultRaw = ok ? (tc?.result?.data ?? tc?.result) : (tc?.result?.error ?? tc?.result);
+    const resultPreview = toPreviewText(resultRaw, 150);
+
+    campfireTraceEntries.push({
+      id: traceId,
+      agent: traceAgent,
+      name,
+      ok,
+      durationMs,
+      argsPreview,
+      resultPreview,
+      tsMs: traceTs,
+    });
+    changed = true;
+  }
+
+  if (campfireTraceEntries.length > CAMPFIRE_TRACE_RENDER_LIMIT) {
+    campfireTraceEntries = campfireTraceEntries.slice(-CAMPFIRE_TRACE_RENDER_LIMIT);
+  }
+  return changed;
+}
+
+function appendCampfireRecord(record) {
+  if (!record || typeof record !== "object") return false;
+  const agent = typeof record.agent === "string" && record.agent.trim()
+    ? record.agent.trim()
+    : "system";
+  const message = typeof record.message === "string" ? record.message.trim() : "";
+  if (!message) return false;
+
+  const id = typeof record.id === "string" && record.id.trim()
+    ? record.id.trim()
+    : `${String(record.ts || "")}:${agent}:${message.slice(0, 80)}`;
+  if (campfireSeenRecordIds.has(id)) return false;
+  campfireSeenRecordIds.add(id);
+
+  const tsIso = typeof record.ts === "string" ? record.ts : "";
+  const parsedTs = Date.parse(tsIso);
+  if (Number.isFinite(parsedTs) && parsedTs > campfireUpdateSinceTs) {
+    campfireUpdateSinceTs = parsedTs;
+  }
+  appendCampfireTracesFromRecord(record, Number.isFinite(parsedTs) ? parsedTs : Date.now());
+
+  const recentDup = campfireMessages
+    .slice(Math.max(0, campfireMessages.length - 6))
+    .some((entry) => entry.agent === agent && entry.message === message);
+  if (recentDup) return false;
+
+  campfireMessages.push({
+    agent,
+    message,
+    type: agent === "system" ? "error" : "agent",
+  });
+  return true;
+}
+
+async function pollCampfireUpdates(force = false) {
+  if (view !== "campfire" || !campfireSessionId) return;
+  if (campfireUpdatesInFlight && !force) return;
+
+  campfireUpdatesInFlight = true;
+  try {
+    const params = new URLSearchParams();
+    params.set("session", campfireSessionId);
+    params.set("limit", String(CAMPFIRE_UPDATES_LIMIT));
+    if (campfireUpdateSinceTs > 0) {
+      params.set("since", new Date(Math.max(0, campfireUpdateSinceTs - 800)).toISOString());
+    }
+
+    const res = await fetch(`/api/group/updates?${params.toString()}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!data || !Array.isArray(data.messages)) return;
+
+    let appended = false;
+    const traceCountBefore = campfireTraceEntries.length;
+    for (const record of data.messages) {
+      if (appendCampfireRecord(record)) appended = true;
+    }
+    const traceChanged = campfireTraceEntries.length !== traceCountBefore;
+    if (appended || traceChanged) {
+      renderCampfireMessages();
+      renderCampfireTraceEntries();
+    }
+  } catch {
+    // best effort only
+  } finally {
+    campfireUpdatesInFlight = false;
+  }
+}
+
+function startCampfireUpdatesPolling() {
+  if (campfireUpdatesTimer !== null) return;
+  campfireUpdatesTimer = window.setInterval(() => {
+    void pollCampfireUpdates();
+  }, CAMPFIRE_UPDATES_POLL_MS);
+  void pollCampfireUpdates(true);
+}
+
+function stopCampfireUpdatesPolling() {
+  if (campfireUpdatesTimer !== null) {
+    clearInterval(campfireUpdatesTimer);
+    campfireUpdatesTimer = null;
+  }
+}
+
 function showCampfire() {
   if (isProfilePanelMenuOpen() || view === "profile") hideProfile();
   closeAgentMenu();
   closeAgentProfileWindow();
+  if (!campfireSessionId) {
+    resetCampfireLiveTracking();
+  }
   view = "campfire";
   const panel = document.getElementById("campfire-panel");
   panel.classList.add("visible");
@@ -3861,6 +4413,8 @@ function showCampfire() {
 
   updateCampfireSession();
   renderCampfireMessages();
+  renderCampfireTraceEntries();
+  startCampfireUpdatesPolling();
 
   if (visibleAgents.length > 0) {
     setTimeout(() => {
@@ -3873,6 +4427,7 @@ function hideCampfire() {
   view = "grid";
   document.getElementById("campfire-panel").classList.remove("visible");
   document.getElementById("campfire-input").blur();
+  stopCampfireUpdatesPolling();
 }
 
 function updateCampfireSession() {
@@ -3925,6 +4480,42 @@ function renderCampfireMessages() {
   container.scrollTop = container.scrollHeight;
 }
 
+function renderCampfireTraceEntries() {
+  const container = document.getElementById("campfire-trace-entries");
+  const statusEl = document.getElementById("campfire-trace-status");
+  if (!container) return;
+
+  if (campfireTraceEntries.length === 0) {
+    container.innerHTML = '<div class="campfire-trace-empty">group traces appear here</div>';
+    if (statusEl) statusEl.textContent = "0 calls";
+    return;
+  }
+
+  const entries = campfireTraceEntries.slice(-CAMPFIRE_TRACE_RENDER_LIMIT);
+  container.innerHTML = entries
+    .map((entry) => {
+      const detailLine = entry.ok
+        ? `args: ${entry.argsPreview}\nresult: ${entry.resultPreview}`
+        : `args: ${entry.argsPreview}\nerror: ${entry.resultPreview}`;
+      const statusCls = entry.ok ? "success" : "error";
+      return `<div class="campfire-trace-entry ${statusCls}">
+        <div class="campfire-trace-entry-head">
+          <span class="campfire-trace-agent">${escapeHtml(entry.agent)}</span>
+          <span class="campfire-trace-fn">${escapeHtml(entry.name)}</span>
+          <span class="campfire-trace-time">${escapeHtml(String(entry.durationMs))}ms</span>
+        </div>
+        <div class="campfire-trace-detail">${escapeHtml(detailLine)}</div>
+      </div>`;
+    })
+    .join("");
+  container.scrollTop = container.scrollHeight;
+
+  if (statusEl) {
+    const total = campfireTraceEntries.length;
+    statusEl.textContent = `${total} call${total !== 1 ? "s" : ""}`;
+  }
+}
+
 async function sendCampfire(message) {
   pruneCampfireSelectionToVisible();
   const selected = [...campfireSelected];
@@ -3943,7 +4534,7 @@ async function sendCampfire(message) {
   }
 
   // Show thinking indicator
-  campfireMessages.push({ agent: "...", message: `${selected.length} agents thinking...`, type: "thinking" });
+  campfireMessages.push({ agent: "...", message: "waiting for next reply...", type: "thinking" });
   renderCampfireMessages();
 
   try {
@@ -3961,7 +4552,9 @@ async function sendCampfire(message) {
         message: message && message.trim() ? message.trim() : undefined,
         history,
         rounds: 1,
+        maxImmediateReplies: 1,
         sessionId: campfireSessionId || undefined,
+        autonomy: true,
       }),
     });
 
@@ -3969,7 +4562,11 @@ async function sendCampfire(message) {
 
     // Track the session ID so adding/removing peers continues the same session
     if (data.session) {
-      campfireSessionId = data.session;
+      const incomingSession = String(data.session);
+      if (campfireSessionId !== incomingSession) {
+        resetCampfireLiveTracking();
+      }
+      campfireSessionId = incomingSession;
     }
     
     // Remove thinking indicator
@@ -3983,21 +4580,31 @@ async function sendCampfire(message) {
         dedupeKey: `campfire-error:${String(data.error).slice(0, 48)}`,
         cooldownMs: 1400,
       });
-    } else if (data.messages) {
+    } else if (Array.isArray(data.records) && data.records.length > 0) {
+      for (const record of data.records) {
+        appendCampfireRecord(record);
+      }
+    } else if (Array.isArray(data.messages)) {
       for (const line of data.messages) {
-        campfireMessages.push({ agent: line.agent, message: line.message, type: "agent" });
-        logAgentEvent(truncateText(String(line.message).replace(/\s+/g, " "), 84), {
-          agentName: line.agent,
-          kind: "chat",
-          dedupeKey: `campfire-line:${line.agent}:${String(line.message).slice(0, 52)}`,
+        const agent = typeof line?.agent === "string" ? line.agent : "system";
+        const text = typeof line?.message === "string" ? line.message : "";
+        if (!text.trim()) continue;
+        campfireMessages.push({ agent, message: text, type: agent === "system" ? "error" : "agent" });
+        logAgentEvent(truncateText(text.replace(/\s+/g, " "), 84), {
+          agentName: agent === "system" ? null : agent,
+          kind: agent === "system" ? "state" : "chat",
+          dedupeKey: `campfire-line:${agent}:${text.slice(0, 52)}`,
           cooldownMs: 700,
         });
+        if (Array.isArray(line.toolCalls)) {
+          appendCampfireTracesFromRecord({ agent, toolCalls: line.toolCalls }, Date.now());
+        }
       }
     }
   } catch (err) {
     campfireMessages = campfireMessages.filter((m) => m.type !== "thinking");
     campfireMessages.push({ agent: "system", message: "could not reach agents", type: "error" });
-    logAgentEvent("report failed: campfire unreachable", {
+    logAgentEvent("report failed: session unreachable", {
       kind: "state",
       dedupeKey: "campfire-unreachable",
       cooldownMs: 2600,
@@ -4007,6 +4614,11 @@ async function sendCampfire(message) {
   campfireSending = false;
   sendBtn.disabled = false;
   renderCampfireMessages();
+  renderCampfireTraceEntries();
+  if (campfireSessionId) {
+    startCampfireUpdatesPolling();
+    void pollCampfireUpdates(true);
+  }
   input.focus();
 }
 
@@ -4762,7 +5374,7 @@ function animateProfileSprite(timestamp) {
     if (iconImage) {
       pctx.drawImage(iconImage, x, y, iconSize, iconSize);
     } else if (modelMeta.label) {
-      pctx.font = "12px 'Departure Mono', 'Noto Emoji', 'Noto Color Emoji', monospace";
+      pctx.font = "12px 'Departure Mono', 'Noto Emoji', monospace";
       pctx.textAlign = "left";
       pctx.textBaseline = "top";
       pctx.shadowColor = "rgba(0, 0, 0, 0.6)";
@@ -5118,6 +5730,58 @@ async function init() {
     updateCampfireSession();
   });
 
+  // DJ boombox + profile trace controls
+  const djBoomboxPlayBtn = document.getElementById("dj-boombox-play");
+  const djBoomboxPauseBtn = document.getElementById("dj-boombox-pause");
+  const djTracePlayBtn = document.getElementById("dj-trace-play");
+  const djTracePauseBtn = document.getElementById("dj-trace-pause");
+  const djTrackRequestBtn = document.getElementById("dj-track-request");
+  const djTrackQueryBtn = document.getElementById("dj-track-query");
+  const djTrackInput = document.getElementById("dj-track-input");
+
+  if (djBoomboxPlayBtn) {
+    djBoomboxPlayBtn.addEventListener("click", () => {
+      void runDjCommand("play");
+    });
+  }
+  if (djBoomboxPauseBtn) {
+    djBoomboxPauseBtn.addEventListener("click", () => {
+      void runDjCommand("pause");
+    });
+  }
+  if (djTracePlayBtn) {
+    djTracePlayBtn.addEventListener("click", () => {
+      void runDjCommand("play");
+    });
+  }
+  if (djTracePauseBtn) {
+    djTracePauseBtn.addEventListener("click", () => {
+      void runDjCommand("pause");
+    });
+  }
+  if (djTrackRequestBtn) {
+    djTrackRequestBtn.addEventListener("click", () => {
+      void runDjCommand("request", djTrackInput?.value || "");
+    });
+  }
+  if (djTrackQueryBtn) {
+    djTrackQueryBtn.addEventListener("click", () => {
+      void runDjCommand("query", djTrackInput?.value || "");
+    });
+  }
+  if (djTrackInput) {
+    djTrackInput.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      if (event.metaKey || event.ctrlKey) {
+        void runDjCommand("query", djTrackInput.value);
+      } else {
+        void runDjCommand("request", djTrackInput.value);
+      }
+    });
+  }
+  syncDjUiState();
+
   // Fetch initial data
   await fetchRoster();
   logAgentEvent(`${agents.length} agents loaded`, {
@@ -5136,6 +5800,8 @@ async function init() {
 function loop(timestamp) {
   const delta = lastTimestamp ? timestamp - lastTimestamp : 16;
   lastTimestamp = timestamp;
+  void pollServerEvents();
+  syncDjUiState();
   syncEventLogVisibility();
   if (timestamp - eventLogLastRepaint > EVENT_LOG_REPAINT_MS && shouldAutoRepaintEventLog()) {
     eventLogLastRepaint = timestamp;

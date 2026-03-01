@@ -44,6 +44,12 @@ Set `COSMANIA_URL` env to point to the Cosmania health server.
 ```
 DEX_PORT=3333                 # server port
 COSMANIA_URL=http://localhost:8080  # Cosmania health server
+DEX_AUTONOMY_ENABLED=0        # set to 1 for autonomous backend group turns
+DEX_AUTONOMY_INTERVAL_MS=45000 # autonomous loop cadence
+DEX_AUTONOMY_SESSION_ID=dex-autonomy # continuous Honcho session id for autonomy
+DEX_GROUP_AUTONOMY_ENABLED=1  # autonomous interactions within started group sessions
+DEX_GROUP_AUTONOMY_MIN_MS=18000 # min gap between spontaneous group turns
+DEX_GROUP_AUTONOMY_MAX_MS=70000 # max gap between spontaneous group turns
 MISTRAL_API_KEY=              # for agent conversations
 ELEVENLABS_API_KEY=           # for voice synthesis
 WANDB_API_KEY=                # for W&B Weave tracing (auto-enabled when set)

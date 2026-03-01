@@ -393,6 +393,13 @@ export async function recordGroupMessage(
   speakerName: string,
   content: string,
   sessionId?: string,
+  toolCalls?: Array<{
+    id: string;
+    name: string;
+    args: Record<string, any>;
+    result: { success: boolean; data: any; error?: string };
+    durationMs: number;
+  }>,
 ): Promise<void> {
   const honcho = getHoncho();
   const speaker = await honcho.peer(speakerName, {
@@ -404,13 +411,18 @@ export async function recordGroupMessage(
     ? await honcho.session(sessionId)
     : await getSession(participants);
 
+  const metadata: Record<string, unknown> = {
+    channel: "dex-group",
+    participants: participants.join(","),
+    speaker: speakerName,
+  };
+  if (toolCalls && toolCalls.length > 0) {
+    metadata.toolCalls = toolCalls;
+  }
+
   await session.addMessages([
     speaker.message(content, {
-      metadata: {
-        channel: "dex-group",
-        participants: participants.join(","),
-        speaker: speakerName,
-      },
+      metadata,
     }),
   ]);
 }
