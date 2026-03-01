@@ -1,0 +1,628 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>COSMANIA DEX -- Mistral Worldwide Hackathon 2026</title>
+<style>
+  :root {
+    --bg:             #0b0e14;
+    --bg-surface:     #11151c;
+    --bg-elevated:    #181d27;
+    --bg-code:        #0d1018;
+    --fg:             #c9d1d9;
+    --fg-bright:      #e6edf3;
+    --fg-muted:       #6e7681;
+    --fg-subtle:      #484f58;
+    --accent:         #7eb8f6;
+    --accent-dim:     #3d6ea5;
+    --accent-glow:    rgba(126, 184, 246, 0.08);
+    --green:          #7ee6a8;
+    --green-dim:      #2ea04f;
+    --orange:         #e6a855;
+    --red:            #f47067;
+    --purple:         #bc8cff;
+    --cyan:           #56d4dd;
+    --pink:           #f0a0b0;
+    --border:         #21262d;
+    --border-subtle:  #161b22;
+    --radius:         6px;
+    --font-sans:      'New York', ui-serif, 'Iowan Old Style', 'Apple Garamond', Baskerville, 'Times New Roman', serif;
+    --font-mono:      'Departure Mono', ui-monospace, 'SF Mono', monospace;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; scroll-padding-top: 2rem; }
+  body {
+    font-family: var(--font-sans);
+    background: var(--bg);
+    color: var(--fg);
+    line-height: 1.7;
+    font-size: 15px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .container { max-width: 860px; margin: 0 auto; padding: 3rem 2rem 6rem; }
+
+  /* Hero */
+  .hero {
+    text-align: center;
+    padding: 4rem 0 3rem;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 3rem;
+  }
+  .hero h1 {
+    font-family: var(--font-mono);
+    font-size: 2.4rem;
+    font-weight: 700;
+    color: var(--fg-bright);
+    letter-spacing: -0.03em;
+    margin-bottom: 0.5rem;
+  }
+  .hero h1 span { color: var(--accent); }
+  .hero .subtitle {
+    color: var(--fg-muted);
+    font-size: 0.92rem;
+    max-width: 540px;
+    margin: 0 auto;
+    line-height: 1.6;
+  }
+  .hero .meta {
+    margin-top: 1.5rem;
+    display: flex;
+    justify-content: center;
+    gap: 1.5rem;
+    flex-wrap: wrap;
+  }
+  .hero .meta span {
+    font-size: 0.8rem;
+    color: var(--fg-subtle);
+    font-family: var(--font-mono);
+  }
+  .hero .meta span a { color: var(--accent-dim); text-decoration: none; }
+  .hero .meta span a:hover { color: var(--accent); }
+
+  /* TOC */
+  .toc {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.5rem 2rem;
+    margin-bottom: 3rem;
+  }
+  .toc h2 {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--fg-muted);
+    margin-bottom: 1rem;
+    border: none;
+    padding: 0;
+  }
+  .toc ol { list-style: none; counter-reset: toc; columns: 2; column-gap: 2rem; }
+  .toc li { counter-increment: toc; break-inside: avoid; margin-bottom: 0.35rem; }
+  .toc li::before {
+    content: counter(toc, decimal-leading-zero) " ";
+    color: var(--fg-subtle);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    margin-right: 0.25rem;
+  }
+  .toc a { font-family: var(--font-mono); color: var(--fg); text-decoration: none; font-size: 0.82rem; }
+  .toc a:hover { color: var(--accent); }
+
+  /* Sections */
+  section { margin-bottom: 4rem; }
+  h2 {
+    font-family: var(--font-mono);
+    font-size: 1.3rem;
+    font-weight: 700;
+    color: var(--fg-bright);
+    letter-spacing: -0.01em;
+    margin-bottom: 1.25rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border);
+  }
+  h3 {
+    font-family: var(--font-mono);
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--fg-bright);
+    margin-top: 2rem;
+    margin-bottom: 0.75rem;
+  }
+  h4 {
+    font-family: var(--font-mono);
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--accent);
+    margin-top: 1.5rem;
+    margin-bottom: 0.5rem;
+  }
+
+  p { margin-bottom: 1rem; font-size: 0.95rem; line-height: 1.75; }
+  strong { color: var(--fg-bright); font-weight: 600; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  ul, ol { margin-bottom: 1rem; padding-left: 1.5rem; font-size: 0.93rem; line-height: 1.7; }
+  li { margin-bottom: 0.35rem; }
+  li::marker { color: var(--fg-subtle); }
+
+  /* Tables */
+  .table-wrap { overflow-x: auto; margin-bottom: 1.5rem; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+  th, td { text-align: left; padding: 0.6rem 1rem; border-bottom: 1px solid var(--border-subtle); }
+  th {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--fg-muted);
+    background: var(--bg-surface);
+    border-bottom-color: var(--border);
+    white-space: nowrap;
+  }
+  td { font-size: 0.88rem; }
+  tr:hover td { background: var(--accent-glow); }
+  td code {
+    background: var(--bg-elevated);
+    padding: 0.15em 0.4em;
+    border-radius: 3px;
+    font-family: var(--font-mono);
+    font-size: 0.82em;
+    color: var(--cyan);
+  }
+
+  /* Code */
+  pre {
+    background: var(--bg-code);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.25rem 1.5rem;
+    overflow-x: auto;
+    margin-bottom: 1.5rem;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    line-height: 1.65;
+    color: var(--fg);
+  }
+  p code, li code {
+    background: var(--bg-elevated);
+    padding: 0.15em 0.4em;
+    border-radius: 3px;
+    font-family: var(--font-mono);
+    color: var(--cyan);
+    font-size: 0.85em;
+  }
+
+  /* Callouts */
+  .callout {
+    background: var(--bg-surface);
+    border-left: 3px solid var(--accent-dim);
+    border-radius: 0 var(--radius) var(--radius) 0;
+    padding: 1rem 1.25rem;
+    margin-bottom: 1.5rem;
+    font-size: 0.88rem;
+    color: var(--fg-muted);
+    line-height: 1.6;
+  }
+  .callout strong { font-family: var(--font-mono); color: var(--fg-bright); }
+  .callout.success { border-left-color: var(--green-dim); }
+  .callout.warn { border-left-color: var(--orange); }
+
+  /* Badges */
+  .badge {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 0.2em 0.6em;
+    border-radius: 3px;
+    margin-right: 0.4rem;
+  }
+  .badge.infra { background: rgba(126,184,246,0.15); color: var(--accent); }
+  .badge.creative { background: rgba(188,140,255,0.15); color: var(--purple); }
+  .badge.production { background: rgba(230,168,85,0.15); color: var(--orange); }
+  .badge.embodied { background: rgba(240,160,176,0.15); color: var(--pink); }
+  .badge.tech { background: rgba(86,212,221,0.15); color: var(--cyan); }
+  .badge.memory { background: rgba(126,230,168,0.15); color: var(--green); }
+
+  /* Architecture diagram */
+  .arch-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+    margin-bottom: 2rem;
+  }
+  .arch-box {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.25rem;
+  }
+  .arch-box h4 { margin-top: 0; }
+  .arch-box ul { margin-bottom: 0; padding-left: 1.2rem; }
+  .arch-box.full { grid-column: 1 / -1; }
+
+  /* Agent cards */
+  .agent-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 1rem;
+    margin-bottom: 2rem;
+  }
+  .agent-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1rem 1.25rem;
+  }
+  .agent-card h4 { margin-top: 0; margin-bottom: 0.25rem; }
+  .agent-card p { font-size: 0.85rem; color: var(--fg-muted); margin-bottom: 0; }
+
+  /* Flow */
+  .flow {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin-bottom: 1.5rem;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+  }
+  .flow-step {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    padding: 0.4rem 0.8rem;
+    border-radius: var(--radius);
+    color: var(--fg);
+  }
+  .flow-arrow { color: var(--fg-subtle); }
+</style>
+</head>
+<body>
+<div class="container">
+
+<div class="hero">
+  <h1>COSMANIA <span>DEX</span></h1>
+  <p class="subtitle">A Pokedex-style interface for observing, conversing with, and orchestrating a multi-agent AI framework. Built on Mistral, traced with W&amp;B Weave, remembered with Honcho.</p>
+  <div class="meta">
+    <span>Mistral Worldwide Hackathon 2026</span>
+    <span>NYC</span>
+    <span><a href="https://github.com/erosika/cosmania-dex">github.com/erosika/cosmania-dex</a></span>
+  </div>
+</div>
+
+<nav class="toc">
+  <h2>Contents</h2>
+  <ol>
+    <li><a href="#what">What It Is</a></li>
+    <li><a href="#stack">Technology Stack</a></li>
+    <li><a href="#mistral">Mistral Integration</a></li>
+    <li><a href="#honcho">Honcho Memory</a></li>
+    <li><a href="#weave">W&amp;B Weave Tracing</a></li>
+    <li><a href="#agents">Agent Roster</a></li>
+    <li><a href="#features">Key Features</a></li>
+    <li><a href="#arch">Architecture</a></li>
+  </ol>
+</nav>
+
+<!-- ============================================ -->
+<section id="what">
+  <h2>What It Is</h2>
+  <p>Cosmania is a multi-agent AI framework where specialized agents (coder, dreamer, observer, photoblogger, DJ, etc.) run on schedules, collaborate in group sessions, and maintain persistent memory across conversations. <strong>COSMANIA DEX</strong> is the frontend -- a retro Pokedex-style interface for interacting with all of them in real time.</p>
+
+  <p>Think of it as a mission control for your AI team: a canvas grid showing every agent's state, direct chat with tool execution, group campfire conversations, autonomous agent-to-agent dialogue, photo uploads with vision analysis, model hot-swapping, and full observability through trace logs and event streams.</p>
+
+  <div class="callout success">
+    <strong>Hackathon focus:</strong> The DEX was built entirely during this hackathon weekend. The underlying Cosmania agent framework pre-exists, but all Mistral integration, the Pokedex UI, Honcho memory, Weave tracing, group autonomy, photo pipeline, and model picker were built from scratch in ~36 hours.
+  </div>
+</section>
+
+<!-- ============================================ -->
+<section id="stack">
+  <h2>Technology Stack</h2>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Layer</th>
+          <th>Technology</th>
+          <th>Role</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><span class="badge infra">LLM</span></td>
+          <td><code>Mistral API</code></td>
+          <td>All agent conversations, tool calling, vision analysis (Pixtral), group chat orchestration</td>
+        </tr>
+        <tr>
+          <td><span class="badge memory">Memory</span></td>
+          <td><code>Honcho</code></td>
+          <td>Persistent agent memory, cross-agent context, dialectic reasoning, session continuity</td>
+        </tr>
+        <tr>
+          <td><span class="badge production">Tracing</span></td>
+          <td><code>W&amp;B Weave</code></td>
+          <td>Every AI call traced with inputs, outputs, latency, token usage</td>
+        </tr>
+        <tr>
+          <td><span class="badge tech">Runtime</span></td>
+          <td><code>Bun</code></td>
+          <td>Server runtime, static file serving, WebSocket-free polling architecture</td>
+        </tr>
+        <tr>
+          <td><span class="badge creative">Frontend</span></td>
+          <td>Vanilla JS + Canvas 2D</td>
+          <td>Zero-framework pixel art UI with gamepad support</td>
+        </tr>
+        <tr>
+          <td><span class="badge infra">Vision</span></td>
+          <td><code>Pixtral Large</code></td>
+          <td>Photo analysis via Mistral's vision model with sharp preprocessing</td>
+        </tr>
+        <tr>
+          <td><span class="badge embodied">Deploy</span></td>
+          <td><code>Cloudflare Pages</code></td>
+          <td>Photoblog static site deployment</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ============================================ -->
+<section id="mistral">
+  <h2>Mistral Integration</h2>
+  <p>Every conversation in the DEX goes through the Mistral API. This isn't a thin wrapper -- it's a full agentic system with tool use, multi-turn context, and per-agent personality.</p>
+
+  <h3>How It Works</h3>
+  <ul>
+    <li><strong>Per-agent system prompts</strong> -- each agent gets identity, capability awareness, and collaboration context injected into their system prompt</li>
+    <li><strong>Tool calling</strong> -- agents have real tools (Honcho memory read/write/search, photo analysis, blog publishing, vault writing, catalog stats) executed server-side with results fed back</li>
+    <li><strong>Multi-turn with tool loops</strong> -- up to 6 iterations of tool calls per conversation turn, allowing agents to chain operations (analyze photo, then ingest, then publish)</li>
+    <li><strong>Group chat orchestration</strong> -- multi-agent campfire sessions where agents take turns responding, each with their own system prompt and tool access</li>
+    <li><strong>Autonomous group sessions</strong> -- agents continue conversations without human input on configurable random intervals</li>
+  </ul>
+
+  <h3>Models Used</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Model</th><th>Use</th></tr></thead>
+      <tbody>
+        <tr><td><code>mistral-small-latest</code></td><td>Default agent conversations and group chat</td></tr>
+        <tr><td><code>pixtral-large-latest</code></td><td>Photo vision analysis (uploaded images resized to 2048px via sharp)</td></tr>
+        <tr><td>Runtime swappable</td><td>Model picker carousel supports all 9+ Mistral chat models per-agent</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Model Picker</h3>
+  <p>Each agent's model can be hot-swapped at runtime through a pixel-art carousel UI. Press <code>M</code> on any agent profile to cycle through all available Mistral models (Small, Medium, Large, Pixtral, Codestral, Ministral, Nemo, Devstral, Magistral) with 192px sprite icons. Overrides persist per-agent until reset.</p>
+
+  <h3>Tool Architecture</h3>
+  <p>Tools are defined as Mistral function-calling schemas and dispatched to handler functions server-side. Each tool call is traced via Weave and logged to the event stream. The photoblogger agent has extended tools:</p>
+  <div class="flow">
+    <span class="flow-step">analyze_uploaded_image</span>
+    <span class="flow-arrow">&rarr;</span>
+    <span class="flow-step">ingest_to_catalog</span>
+    <span class="flow-arrow">&rarr;</span>
+    <span class="flow-step">process_for_blog</span>
+    <span class="flow-arrow">&rarr;</span>
+    <span class="flow-step">publish_blog</span>
+  </div>
+</section>
+
+<!-- ============================================ -->
+<section id="honcho">
+  <h2>Honcho -- Persistent Agent Memory</h2>
+  <p><a href="https://honcho.dev">Honcho</a> provides the memory layer that makes agents feel continuous across sessions. Without it, every conversation starts from zero. With it, agents remember past interactions, build on previous analysis, and maintain coherent personalities over time.</p>
+
+  <div class="callout">
+    <strong>Why Honcho matters:</strong> LLM conversations are stateless by default. Honcho adds a persistent memory substrate so agents accumulate knowledge, preferences, and context across conversations -- enabling genuine long-term agent behavior rather than stateless Q&amp;A.
+  </div>
+
+  <h3>Integration Points</h3>
+  <ul>
+    <li><strong>Session persistence</strong> -- each agent-user conversation maps to a Honcho session, preserving message history across server restarts</li>
+    <li><strong>Cross-agent context</strong> -- before responding, agents load relevant conclusions from Honcho to understand what other agents have been doing</li>
+    <li><strong>Dialectic reasoning</strong> -- Honcho's dialectic engine synthesizes conclusions from agent observations, building higher-order understanding over time</li>
+    <li><strong>Memory tools</strong> -- agents can explicitly <code>recall_visual_identity</code>, <code>save_visual_conclusion</code>, and <code>search_memory</code> through Mistral tool calls that read/write Honcho conclusions</li>
+    <li><strong>Group session memory</strong> -- campfire conversations are recorded per-session so agents recall what was discussed when the group reconvenes</li>
+  </ul>
+
+  <h3>How It's Wired</h3>
+  <pre>// At conversation start: load context from Honcho
+const sessionMessages = await loadSessionMessages(agentName, sessionKey);
+const agentContext = await loadAgentContext(agentName);
+
+// Injected into system prompt
+"MEMORY CONTEXT: {agentContext}"
+
+// After each response: persist to Honcho
+await recordMessage(agentName, "user", userMessage, sessionKey);
+await recordMessage(agentName, "assistant", response, sessionKey);</pre>
+</section>
+
+<!-- ============================================ -->
+<section id="weave">
+  <h2>W&amp;B Weave Tracing</h2>
+  <p>Every Mistral API call is wrapped with <code>weave.op()</code> so it appears in the W&amp;B Weave dashboard with full inputs, outputs, latency, and token counts.</p>
+
+  <h3>What's Traced</h3>
+  <ul>
+    <li><code>chat_{agentName}</code> -- individual agent conversations</li>
+    <li><code>generateGroupChat</code> -- multi-agent campfire sessions</li>
+    <li><code>generateStandup</code> -- agent standup reports</li>
+    <li><code>compressBubble</code> -- speech bubble text compression</li>
+  </ul>
+
+  <h3>Graceful Degradation</h3>
+  <p>If <code>WANDB_API_KEY</code> is not set or the key is invalid, all traced functions behave as plain functions with zero overhead. The init process validates: (1) GraphQL auth to resolve the W&amp;B entity, (2) probe write access to <code>trace.wandb.ai</code>, then (3) initializes the SDK. Any failure silently disables tracing.</p>
+</section>
+
+<!-- ============================================ -->
+<section id="agents">
+  <h2>Agent Roster</h2>
+  <p>Each agent has a defined role, tool access, capability profile, and collaboration graph. The DEX displays all of them on a pixel-art grid with real-time state.</p>
+
+  <div class="agent-grid">
+    <div class="agent-card">
+      <h4><span class="badge infra">infra</span> Sentinel</h4>
+      <p>System health monitor. Watches uptime, circuit breakers, resource usage.</p>
+    </div>
+    <div class="agent-card">
+      <h4><span class="badge creative">creative</span> Dreamer</h4>
+      <p>Pattern synthesizer. Identifies cross-agent trends and generates insights.</p>
+    </div>
+    <div class="agent-card">
+      <h4><span class="badge production">production</span> Coder</h4>
+      <p>Code generation and implementation. Executes via Claude Code CLI.</p>
+    </div>
+    <div class="agent-card">
+      <h4><span class="badge production">production</span> Observer</h4>
+      <p>Workspace pattern analyst. Tracks development velocity and suggests improvements.</p>
+    </div>
+    <div class="agent-card">
+      <h4><span class="badge creative">creative</span> Scribe</h4>
+      <p>Report generator. Synthesizes agent activity into daily status documents.</p>
+    </div>
+    <div class="agent-card">
+      <h4><span class="badge creative">creative</span> Photoblogger</h4>
+      <p>Visual curator. Analyzes photos via Pixtral, publishes to Cloudflare Pages.</p>
+    </div>
+    <div class="agent-card">
+      <h4><span class="badge creative">creative</span> Director</h4>
+      <p>Video pipeline. Ingests, transcribes, edits, and exports media.</p>
+    </div>
+    <div class="agent-card">
+      <h4><span class="badge embodied">embodied</span> Vitals</h4>
+      <p>Health data interpreter. Reads Apple Health exports, tracks biometrics.</p>
+    </div>
+    <div class="agent-card">
+      <h4><span class="badge creative">creative</span> Composer</h4>
+      <p>Audio specialist. Soundtracks, transcription reports, audio analysis.</p>
+    </div>
+    <div class="agent-card">
+      <h4><span class="badge creative">creative</span> DJ</h4>
+      <p>Music curator. Discovery, playlist generation, vibe matching.</p>
+    </div>
+    <div class="agent-card">
+      <h4><span class="badge creative">creative</span> Eros</h4>
+      <p>Embodied presence. Interpersonal dynamics and emotional intelligence.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================ -->
+<section id="features">
+  <h2>Key Features</h2>
+
+  <h3>Pokedex Grid View</h3>
+  <p>Canvas 2D rendering of all agents as 32x32 pixel sprites on a tile grid. Agents wander, seek each other out, and display speech bubbles. Navigate with arrow keys or gamepad D-pad.</p>
+
+  <h3>Agent Profile &amp; Chat</h3>
+  <p>Select any agent to see their full profile: role, type, execution tier, uptime meter, run count, last activity, and current speech bubble. Chat directly with them -- messages go through Mistral with full tool access. See every tool call in the trace panel with args, results, and duration.</p>
+
+  <h3>Campfire Group Chat</h3>
+  <p>Select 2+ agents for a group conversation. Agents take turns responding with awareness of who else is in the room and what was just said. Group sessions persist and continue autonomously on random intervals (18-70s) when enabled.</p>
+
+  <h3>Photo Pipeline</h3>
+  <p>Upload a JPEG/PNG to the photoblogger. The image is resized via <code>sharp</code>, analyzed by <strong>Pixtral Large</strong> for mood/tags/description, ingested into the Cosmania catalog with EXIF data, processed into web-sized + thumbnail versions, and published as a static site to Cloudflare Pages. The resulting blog URL opens in an embedded webview within the DEX.</p>
+
+  <h3>Event Log</h3>
+  <p>Real-time stream of all agent activity: chat messages, tool calls, state changes, group sessions. Filterable by kind (trace, chat, social, state, info) with full-text search and semantic search via Honcho.</p>
+
+  <h3>Model Picker</h3>
+  <p>Per-agent Mistral model override via pixel-art carousel. Cycle through 9 models with dedicated sprite icons. Changes take effect immediately for the next conversation.</p>
+
+  <h3>Agent Profile HUD</h3>
+  <p>Mini floating window showing agent vitals: uptime percentage, run count, last run time, cost, circuit breaker state. Navigate between agents with PREV/NEXT.</p>
+
+  <h3>World Topology Editor</h3>
+  <p>Edit the grid layout as JSON. Add/remove zones, reposition agents, change tile sizes. Apply changes live or rebuild the entire world.</p>
+</section>
+
+<!-- ============================================ -->
+<section id="arch">
+  <h2>Architecture</h2>
+
+  <div class="arch-grid">
+    <div class="arch-box">
+      <h4>Client</h4>
+      <ul>
+        <li>Vanilla JS + Canvas 2D</li>
+        <li>No framework, no build step</li>
+        <li>Gamepad API for handheld input</li>
+        <li><code>image-rendering: pixelated</code></li>
+        <li>Polling-based (no WebSocket)</li>
+      </ul>
+    </div>
+    <div class="arch-box">
+      <h4>Server</h4>
+      <ul>
+        <li>Bun.serve (single process)</li>
+        <li>Static file server + API</li>
+        <li>Proxy to Cosmania upstream</li>
+        <li>Mistral client with tool dispatch</li>
+        <li>Upload registry with disk persistence</li>
+      </ul>
+    </div>
+    <div class="arch-box">
+      <h4>Integrations</h4>
+      <ul>
+        <li>Mistral API (chat + vision)</li>
+        <li>Honcho v3 SDK (memory)</li>
+        <li>W&amp;B Weave (tracing)</li>
+        <li>Cloudflare Pages (deploy)</li>
+        <li>sharp (image processing)</li>
+      </ul>
+    </div>
+    <div class="arch-box">
+      <h4>Cosmania Upstream</h4>
+      <ul>
+        <li>Agent roster + profiles</li>
+        <li>Photo catalog (SQLite)</li>
+        <li>Telemetry + signals</li>
+        <li>EXIF parsing + library</li>
+        <li>Blog generation + deploy</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3>Data Flow</h3>
+  <div class="flow">
+    <span class="flow-step">User Input</span>
+    <span class="flow-arrow">&rarr;</span>
+    <span class="flow-step">DEX Server</span>
+    <span class="flow-arrow">&rarr;</span>
+    <span class="flow-step">Honcho Context</span>
+    <span class="flow-arrow">&rarr;</span>
+    <span class="flow-step">Mistral API</span>
+    <span class="flow-arrow">&rarr;</span>
+    <span class="flow-step">Tool Execution</span>
+    <span class="flow-arrow">&rarr;</span>
+    <span class="flow-step">Weave Trace</span>
+  </div>
+
+  <pre>client/          -- Pokedex UI (Canvas 2D, vanilla JS)
+  index.html       single-page app
+  game.js          renderer, input, WebSocket, data fetching (~2800 lines)
+  style.css        dark theme, Departure Mono + New York (~800 lines)
+  sprites/         32x32 agent pixel art + 192px model icons
+
+server/          -- Bun.serve backend
+  main.ts          static server, API routes, group autonomy (~980 lines)
+  mistral.ts       Mistral chat, tools, group orchestration (~1500 lines)
+  honcho.ts        Honcho memory integration
+  uploads.ts       upload registry with disk persistence
+  weave.ts         W&amp;B Weave tracing with graceful degradation</pre>
+</section>
+
+</div>
+</body>
+</html>
