@@ -21,7 +21,7 @@ const AGENT_NAMES = [
   "sentinel", "protector", "treasurer",
   "dreamer", "coder", "scribe", "observer",
   "director", "composer", "photoblogger",
-  "vitals", "eros",
+  "vitals",
 ];
 
 const TYPE_COLORS: Record<string, number> = {

@@ -150,7 +150,7 @@ client.on(Events.MessageCreate, async (message) => {
     "sentinel", "protector", "treasurer",
     "dreamer", "coder", "scribe", "observer",
     "director", "composer", "photoblogger",
-    "vitals", "eros",
+    "vitals",
   ];
 
   const words = content.toLowerCase().split(/\s+/);

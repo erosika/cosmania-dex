@@ -118,7 +118,6 @@ const ALIGNMENT_QUERIES: Record<string, string[]> = {
   composer: ["What are eri's musical and sonic preferences?"],
   photoblogger: ["What are eri's photographic preferences and visual style?"],
   vitals: ["What are eri's health priorities and wellness goals?"],
-  eros: ["How does eri relate to embodiment and sensation?"],
 };
 
 const SEARCH_QUERIES: Record<string, string> = {
@@ -133,7 +132,6 @@ const SEARCH_QUERIES: Record<string, string> = {
   composer: "music audio sound production",
   photoblogger: "photography cameras composition curation",
   vitals: "health wellness sleep biometrics recovery",
-  eros: "pleasure embodiment sensation desire healing",
 };
 
 export interface AgentContext {

@@ -28,7 +28,7 @@ const DEFAULT_VOICES: Record<string, { id: string; name: string }> = {
   composer:     { id: "XrExE9yKIg1WjnnlVkGX", name: "Matilda" },     // warm, audiobook
   photoblogger: { id: "Xb7hH8MSUJpSbSDYk0k2", name: "Alice" },      // British, confident
   vitals:       { id: "EXAVITQu4vr4xnSDxMaL", name: "Sarah" },      // soft, gentle
-  eros:         { id: "XB0fDUnXU5powFXDhCwa", name: "Charlotte" },   // seductive
+
 };
 
 /**

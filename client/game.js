@@ -1154,7 +1154,6 @@ function generateFallbackRoster() {
     { name: "composer", type: "production", tagline: "Builds soundscapes." },
     { name: "photoblogger", type: "production", tagline: "Curates the visual record." },
     { name: "vitals", type: "embodied", tagline: "Reads the body." },
-    { name: "eros", type: "embodied", tagline: "Sensation as architecture." },
     { name: DJ_AGENT_NAME, type: "production", tagline: "Obsessive music nerd." },
   ];
   return names.map((n) => ({

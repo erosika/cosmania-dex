@@ -126,7 +126,7 @@ const AGENT_CAPABILITIES: Record<string, {
     tools: ["Claude Code Companion", "Full file system access", "Git branch/commit", "Task queue", "Honcho Memory System"],
     canDo: ["Write and modify code", "Create branches", "Run tests", "Pick up tasks from queue", "Fix bugs", "Read and write session logs via Honcho"],
     gaps: ["No production deploy access", "Cannot monitor infrastructure", "Cannot assess OPSEC", "Blocked at night + weekends"],
-    collaborates: ["sentinel (gets fix tasks)", "protector (gets remediation tasks)", "observer (gets improvement tasks)", "eros (memory modification)"],
+    collaborates: ["sentinel (gets fix tasks)", "protector (gets remediation tasks)", "observer (gets improvement tasks)"],
   },
   scribe: {
     tools: ["Claude Code CLI", "Telemetry queries", "Report generation", "Obsidian vault file tools"],
@@ -162,20 +162,14 @@ const AGENT_CAPABILITIES: Record<string, {
     tools: ["LLM vision (OpenRouter)", "Honcho persona memory", "Photo catalog (SQLite)", "ffmpeg resize", "Obsidian vault writer", "Static HTML generator", "Image upload receiver"],
     canDo: ["Analyze uploaded photos via vision LLM", "Reason about eri's photographic persona", "Store and recall visual identity conclusions via Honcho", "Score and curate photos", "Ingest photos to catalog", "Generate web/thumb versions", "Write Obsidian vault entries", "Build static photo blog"],
     gaps: ["Cannot edit photos", "No RAW processing", "Cannot geotag without EXIF GPS", "Pipeline tools (ingest, process, vault, publish) require Cosmania upstream"],
-    collaborates: ["dreamer (vault integration)", "director (visual assets)", "eros (embodied aesthetic)"],
+    collaborates: ["dreamer (vault integration)", "director (visual assets)"],
     model: "mistral-medium-latest",
   },
   vitals: {
     tools: ["Apple Health JSON parser", "Oura/Whoop/Withings API adapters", "Anomaly detection (z-score)", "Telegram alerts + voice briefings"],
     canDo: ["Ingest health data", "Detect anomalies", "Calculate readiness scores", "Track supplement adherence", "Morning/evening briefings"],
     gaps: ["Cannot prescribe actions", "No direct device access", "Dependent on Health Auto Export app", "Cannot modify health routines"],
-    collaborates: ["sentinel (health alerts)", "eros (embodiment data)"],
-  },
-  eros: {
-    tools: ["Cosmania MCP", "ai-eros engine", "On-demand invocation", "Sensation parameter engineering", "GitHub access", "Device polling", "Honcho Memory System"],
-    canDo: ["Access external systems and devices via MCP", "Read and write code", "Embodied pleasure architecture", "Sensory precision calibration", "Somatic mapping", "Read and write session logs via Honcho"],
-    gaps: ["No scheduled runs"],
-    collaborates: ["vitals (body data)", "dreamer (conceptual framing)", "coder (for engine modifications)"],
+    collaborates: ["sentinel (health alerts)"],
   },
 };
 
@@ -525,7 +519,6 @@ const AGENT_TOOL_TIERS: Record<string, string[]> = {
   dj: PRODUCTION_TOOLS,
   photoblogger: PHOTOBLOGGER_TOOLS,
   vitals: PRODUCTION_TOOLS,
-  eros: PRODUCTION_TOOLS,
 };
 
 function getToolsForAgent(agentName: string): any[] {
