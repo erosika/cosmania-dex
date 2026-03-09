@@ -11,7 +11,7 @@
 
 import * as weave from "weave";
 import { Mistral } from "@mistralai/mistralai";
-import { chatWithAgent, type AgentProfile, type ChatResult } from "./mistral.ts";
+import { chatWithAgent, type AgentProfile, type ChatResult } from "./hermes.ts";
 
 await weave.init("cosmania-dex");
 

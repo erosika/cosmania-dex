@@ -22,7 +22,7 @@ import {
   getAgentModelInfo,
   type AgentProfile,
   type ExecutedToolCall,
-} from "./mistral.ts";
+} from "./hermes.ts";
 import { generateSpeech, voiceEnabled, listVoices } from "./voice.ts";
 import { initWeave } from "./weave.ts";
 import { initHoncho, honchoEnabled, loadSessionMessages } from "./honcho.ts";
